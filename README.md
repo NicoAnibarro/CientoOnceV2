@@ -30,6 +30,8 @@ npm.cmd run dev
 
 Editar `back-end/.env`: completar `DB_PASSWORD` si MySQL tiene contraseña y reemplazar `JWT_SECRET` por una frase larga y aleatoria. La API escucha en todas las interfaces, puerto 3000.
 
+Para Aiven configurar además `DB_SSL=true`. Si se utiliza TLS sin cargar el certificado CA en Render, configurar `DB_SSL_REJECT_UNAUTHORIZED=false`.
+
 Comprobaciones: `http://localhost:3000/api/health` no requiere MySQL; `http://localhost:3000/api/test-db` verifica la conexión.
 
 ## 3. Frontend y dirección IP
