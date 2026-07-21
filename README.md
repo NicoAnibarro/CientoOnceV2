@@ -85,3 +85,32 @@ Prueba recomendada con cuentas A y B: crear un producto, cliente y pedido como A
 - `Network Error` en el teléfono: comprobar IP, misma Wi-Fi, firewall y que la URL no sea `localhost`.
 - QR no conecta: desactivar temporalmente VPN/red de invitados o probar `--tunnel`.
 - `JWT_SECRET` faltante: crear `back-end/.env` y configurarlo.
+
+## Despliegue actual
+
+- API: `https://ciento-once-v2-api.onrender.com/api`
+- Salud: `https://ciento-once-v2-api.onrender.com/api/health`
+- Base de datos: MySQL administrado en Aiven, base `ciento_once_v2`.
+
+### Render
+
+Configurar un Web Service con:
+
+- Root Directory: `back-end`
+- Build Command: `npm install`
+- Start Command: `npm start`
+- Health Check Path: `/api/health`
+
+Variables requeridas: `NODE_ENV`, `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_NAME`, `DB_SSL`, `DB_SSL_REJECT_UNAUTHORIZED`, `JWT_SECRET`, `JWT_EXPIRES_IN` y `CORS_ORIGIN`. No guardar sus valores reales en Git.
+
+### Aiven
+
+Crear `ciento_once_v2` y ejecutar desde `back-end`:
+
+```powershell
+npm.cmd run db:import
+```
+
+El comando utiliza las variables `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_INITIAL_DATABASE` y `DB_SSL`. La contraseña debe proporcionarse temporalmente mediante el entorno y eliminarse al terminar.
+
+Las instancias gratuitas de Render pueden suspenderse por inactividad; la primera solicitud posterior puede demorar mientras el servicio despierta.
