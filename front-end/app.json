@@ -1,7 +1,7 @@
 {
   "expo": {
-    "name": "front-end",
-    "slug": "front-end",
+    "name": "Ciento Once V2",
+    "slug": "ciento-once-v2",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -10,6 +10,8 @@
       "supportsTablet": true
     },
     "android": {
+      "package": "com.nicoanibarro.cientooncev2",
+      "versionCode": 1,
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
         "foregroundImage": "./assets/android-icon-foreground.png",
@@ -23,6 +25,9 @@
     "plugins": [
       "expo-secure-store",
       "@react-native-community/datetimepicker"
-    ]
+    ],
+    "extra": {
+      "apiUrl": "https://ciento-once-v2-api.onrender.com/api"
+    }
   }
 }
