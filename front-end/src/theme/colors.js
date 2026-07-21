@@ -1,0 +1,15 @@
+export default {
+  background: '#FFFAF0',
+  surface: '#FFFFFF',
+  primary: '#3CB371',
+  primaryDark: '#278653',
+  primarySoft: '#E8F7EF',
+  text: '#111111',
+  textSecondary: '#6B6B6B',
+  border: '#DDE8E1',
+  accent: '#F4C430',
+  danger: '#C7463B',
+  dangerSoft: '#FCEBE9',
+  disabled: '#BDBDBD',
+  black: '#000000',
+};

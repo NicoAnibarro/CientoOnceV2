@@ -1,0 +1,1 @@
+import * as SecureStore from 'expo-secure-store';const KEY='ciento_once_session';export const getSession=async()=>{const value=await SecureStore.getItemAsync(KEY);return value?JSON.parse(value):null};export const saveSession=s=>SecureStore.setItemAsync(KEY,JSON.stringify(s));export const clearSession=()=>SecureStore.deleteItemAsync(KEY);

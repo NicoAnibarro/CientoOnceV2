@@ -1,0 +1,1 @@
+function numero(value){const n=Number(String(value).replace(',','.'));return Number.isFinite(n)?n:null}function entero(value){const n=Number(value);return Number.isInteger(n)?n:null}module.exports={numero,entero};

@@ -1,0 +1,2 @@
+const jwt=require('jsonwebtoken');
+module.exports=(req,res,next)=>{const value=req.headers.authorization||'';const token=value.startsWith('Bearer ')?value.slice(7):null;if(!token)return res.status(401).json({ok:false,mensaje:'Debes iniciar sesión'});try{const data=jwt.verify(token,process.env.JWT_SECRET);req.usuario={id_usuario:data.id_usuario,email:data.email};next();}catch{return res.status(401).json({ok:false,mensaje:'Sesión inválida o vencida'});}};

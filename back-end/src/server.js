@@ -1,0 +1,1 @@
+const app=require('./app');const port=Number(process.env.PORT||3000);if(!process.env.JWT_SECRET){console.error('Falta JWT_SECRET en .env');process.exit(1)}app.listen(port,'0.0.0.0',()=>console.log(`Ciento Once API en http://0.0.0.0:${port}`));
