@@ -27,7 +27,11 @@
       "@react-native-community/datetimepicker"
     ],
     "extra": {
-      "apiUrl": "https://ciento-once-v2-api.onrender.com/api"
-    }
+      "apiUrl": "https://ciento-once-v2-api.onrender.com/api",
+      "eas": {
+        "projectId": "8e6f5174-c656-4aff-8ee3-083da5a3d075"
+      }
+    },
+    "owner": "cientoonce"
   }
 }
