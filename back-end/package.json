@@ -11,8 +11,9 @@
     "db:import": "node scripts/import-schema.js",
     "db:migrate:003": "node scripts/migrate-003.js",
     "db:migrate:004": "node scripts/migrate-004.js",
-    "db:migrate:005": "node scripts/migrate-005.js"
-    ,"db:migrate:006": "node scripts/migrate-006.js"
+    "db:migrate:005": "node scripts/migrate-005.js",
+    "db:migrate:006": "node scripts/migrate-006.js",
+    "db:migrate:production": "node scripts/migrate-production.js"
   },
   "keywords": [],
   "author": "",

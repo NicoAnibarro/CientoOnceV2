@@ -1,8 +1,10 @@
 # Secretos locales
 .env
 **/.env
+**/.env.production
 !.env.example
 !**/.env.example
+!**/.env.production.example
 back-end/secrets/
 
 # Dependencias y compilaciones
