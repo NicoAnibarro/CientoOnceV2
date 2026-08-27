@@ -3,6 +3,7 @@
 **/.env
 !.env.example
 !**/.env.example
+back-end/secrets/
 
 # Dependencias y compilaciones
 node_modules/

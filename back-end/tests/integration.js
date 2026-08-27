@@ -45,6 +45,11 @@ async function run() {
     response = await request('/auth/me', { token: tokenA });
     assert.equal(response.status, 200);
 
+    response = await request('/tickets/analizar', { method: 'POST' });
+    assert.equal(response.status, 401);
+    response = await request('/tickets/analizar', { method: 'POST', token: tokenA });
+    assert.equal(response.status, 400);
+
     response = await request('/productos', { method: 'POST', token: tokenA, body: { nombre: 'Producto integración', descripcion: '', categoria: 'dulce', costo_estimado: 100, precio_venta: 300, stock_actual: 2 } });
     assert.equal(response.status, 201, JSON.stringify(response.json));
     const idProducto = response.json.data.id_producto;
@@ -53,11 +58,14 @@ async function run() {
     response = await request(`/productos/${idProducto}`, { method: 'PUT', token: tokenB, body: { nombre: 'Ataque', categoria: 'dulce', costo_estimado: 0, precio_venta: 1, stock_actual: 0 } });
     assert.equal(response.status, 404);
 
-    response = await request('/clientes', { method: 'POST', token: tokenA, body: { nombre: 'Cliente integración', telefono: '123', direccion: 'Calle prueba' } });
+    response = await request('/clientes', { method: 'POST', token: tokenA, body: { nombre: 'Cliente integración', telefono: '123', direccion: 'Calle prueba', latitud: -27.3671, longitud: -55.8961, ubicacion_origen: 'mapa' } });
     assert.equal(response.status, 201);
     const idCliente = response.json.data.id_cliente;
     response = await request('/clientes', { token: tokenB });
     assert.equal(response.json.data.some(c => c.id_cliente === idCliente), false);
+
+    response = await request('/repartos/pedidos', { token: tokenA });
+    assert.equal(response.status, 200, JSON.stringify(response.json));
 
     response = await request('/insumos', { method: 'POST', token: tokenA, body: { nombre: 'Harina integración', descripcion: '', precio_referencia: 1200, cantidad_referencia: 1, unidad_referencia: 'kg', tipo_medida: 'peso', fecha_precio: '2026-07-20' } });
     assert.equal(response.status, 201, JSON.stringify(response.json));
@@ -68,24 +76,36 @@ async function run() {
     assert.equal(response.json.data.total, 900);
     const idPedido = response.json.data.id_pedido;
 
+    response = await request('/repartos/pedidos?estado=pendiente&buscar=Cliente', { token: tokenA });
+    assert.equal(response.status, 200, JSON.stringify(response.json));
+    assert.equal(response.json.data.some(item => item.id_pedido === idPedido && item.tiene_ubicacion), true);
+    response = await request('/repartos/pedidos', { token: tokenB });
+    assert.equal(response.json.data.some(item => item.id_pedido === idPedido), false);
+
     response = await request(`/pedidos/${idPedido}`, { token: tokenA });
-    assert.equal(response.json.data.detalles[0].cantidad_stock_descontada, 0);
+    assert.equal(response.json.data.detalles[0].cantidad_stock_descontada, 3);
     response = await request(`/pedidos/${idPedido}`, { token: tokenB });
     assert.equal(response.status, 404);
     response = await request('/productos', { token: tokenA });
-    assert.equal(response.json.data.find(p => p.id_producto === idProducto).stock_actual, 2);
+    assert.equal(response.json.data.find(p => p.id_producto === idProducto).stock_actual, -1);
     response = await request(`/pedidos/${idPedido}/estado`, { method: 'PATCH', token: tokenA, body: { estado: 'entregado' } });
     assert.equal(response.status, 200);
     response = await request(`/pedidos/${idPedido}`, { token: tokenA });
-    assert.equal(response.json.data.detalles[0].cantidad_stock_descontada, 2);
+    assert.equal(response.json.data.detalles[0].cantidad_stock_descontada, 3);
     response = await request('/productos', { token: tokenA });
-    assert.equal(response.json.data.find(p => p.id_producto === idProducto).stock_actual, 0);
+    assert.equal(response.json.data.find(p => p.id_producto === idProducto).stock_actual, -1);
     response = await request(`/pedidos/${idPedido}/estado`, { method: 'PATCH', token: tokenA, body: { estado: 'pendiente' } });
+    assert.equal(response.status, 200);
+    response = await request('/productos', { token: tokenA });
+    assert.equal(response.json.data.find(p => p.id_producto === idProducto).stock_actual, -1);
+    response = await request(`/pedidos/${idPedido}/estado`, { method: 'PATCH', token: tokenA, body: { estado: 'cancelado' } });
     assert.equal(response.status, 200);
     response = await request('/productos', { token: tokenA });
     assert.equal(response.json.data.find(p => p.id_producto === idProducto).stock_actual, 2);
     response = await request(`/pedidos/${idPedido}/estado`, { method: 'PATCH', token: tokenA, body: { estado: 'entregado' } });
     assert.equal(response.status, 200);
+    response = await request('/productos', { token: tokenA });
+    assert.equal(response.json.data.find(p => p.id_producto === idProducto).stock_actual, -1);
 
     response = await request(`/pedidos/${idPedido}/pagado`, { method: 'PATCH', token: tokenA, body: { pagado: false } });
     assert.equal(response.status, 200);
@@ -117,6 +137,29 @@ async function run() {
     assert.equal(response.json.data.ingresos, 0);
     assert.equal(response.json.data.egresos, 2400);
     assert.equal(response.json.data.balance, -2400);
+
+    response = await request('/caja/movimientos', { method: 'POST', token: tokenA, body: { tipo: 'ingreso', monto: 5000, descripcion: 'Capital inicial' } });
+    assert.equal(response.status, 201, JSON.stringify(response.json));
+    response = await request('/caja/movimientos', { method: 'POST', token: tokenA, body: { tipo: 'egreso', monto: 1000, descripcion: 'Retiro personal' } });
+    assert.equal(response.status, 201, JSON.stringify(response.json));
+    response = await request('/caja/resumen', { token: tokenA });
+    assert.equal(response.json.data.ingresos, 5000);
+    assert.equal(response.json.data.egresos, 3400);
+    assert.equal(response.json.data.balance, 1600);
+
+    response = await request('/costos-productos', { method: 'POST', token: tokenA, body: { nombre: 'Torta integración', costo_total: 300, detalles: [{ id_insumo: idInsumo, insumo_nombre: 'Harina integración', cantidad_usada: 250, unidad_usada: 'g', subtotal: 300 }] } });
+    assert.equal(response.status, 201, JSON.stringify(response.json));
+    const idCosto = response.json.data.id_costo_producto;
+    response = await request('/costos-productos', { token: tokenA });
+    assert.equal(response.json.data.some(item => item.id_costo_producto === idCosto), true);
+    response = await request(`/costos-productos/${idCosto}`, { method: 'PUT', token: tokenA, body: { nombre: 'Torta editada', costo_total: 350, detalles: [] } });
+    assert.equal(response.status, 200, JSON.stringify(response.json));
+    response = await request('/costos-productos', { token: tokenA });
+    assert.equal(response.json.data.find(item => item.id_costo_producto === idCosto).costo_total, 350);
+    response = await request('/costos-productos', { token: tokenB });
+    assert.equal(response.json.data.some(item => item.id_costo_producto === idCosto), false);
+    response = await request(`/costos-productos/${idCosto}/desactivar`, { method: 'PATCH', token: tokenA });
+    assert.equal(response.status, 200);
 
     console.log('OK: autenticación, aislamiento, CRUD, stock, pedidos, pagos, compras y caja');
   } finally {

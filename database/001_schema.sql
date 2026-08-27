@@ -10,9 +10,9 @@ CREATE TABLE usuarios (
 
 CREATE TABLE clientes (
  id_cliente INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, id_usuario INT UNSIGNED NOT NULL, nombre VARCHAR(100) NOT NULL,
- telefono VARCHAR(40), direccion VARCHAR(255), observacion TEXT, activo TINYINT(1) NOT NULL DEFAULT 1,
+ telefono VARCHAR(40), direccion VARCHAR(255), latitud DECIMAL(10,7) NULL, longitud DECIMAL(10,7) NULL, google_place_id VARCHAR(255) NULL, ubicacion_origen ENUM('manual','busqueda','mapa','actual') NULL, instrucciones_entrega VARCHAR(255) NULL, observacion TEXT, activo TINYINT(1) NOT NULL DEFAULT 1,
  fecha_creacion DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, fecha_actualizacion DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
- INDEX idx_clientes_usuario_nombre (id_usuario,nombre), INDEX idx_clientes_activo (activo),
+ INDEX idx_clientes_usuario_nombre (id_usuario,nombre), INDEX idx_clientes_activo (activo), INDEX idx_clientes_coordenadas (id_usuario,latitud,longitud),
  CONSTRAINT fk_clientes_usuario FOREIGN KEY(id_usuario) REFERENCES usuarios(id_usuario)
 ) ENGINE=InnoDB;
 
@@ -78,12 +78,27 @@ CREATE TABLE compra_detalles (
 
 CREATE TABLE movimientos_caja (
  id_movimiento_caja INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, id_usuario INT UNSIGNED NOT NULL,
- tipo ENUM('ingreso','egreso') NOT NULL, categoria ENUM('pedido','compra') NOT NULL, concepto VARCHAR(255) NOT NULL,
- monto DECIMAL(12,2) NOT NULL, origen ENUM('pedido','compra') NOT NULL, origen_id INT UNSIGNED NOT NULL,
+ tipo ENUM('ingreso','egreso') NOT NULL, categoria ENUM('pedido','compra','capital') NOT NULL, concepto VARCHAR(255) NOT NULL,
+ monto DECIMAL(12,2) NOT NULL, origen ENUM('pedido','compra','manual') NOT NULL, origen_id INT UNSIGNED NULL,
  anulado TINYINT(1) NOT NULL DEFAULT 0, fecha_movimiento DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, observaciones TEXT,
  fecha_creacion DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, fecha_actualizacion DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
  UNIQUE KEY uq_caja_origen(id_usuario,origen,origen_id), INDEX idx_caja_fecha(id_usuario,fecha_movimiento), INDEX idx_caja_anulado(anulado),
  CONSTRAINT fk_caja_usuario FOREIGN KEY(id_usuario) REFERENCES usuarios(id_usuario)
+) ENGINE=InnoDB;
+
+CREATE TABLE costos_productos (
+ id_costo_producto INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+ id_usuario INT UNSIGNED NOT NULL,
+ nombre VARCHAR(150) NOT NULL,
+ costo_total DECIMAL(12,2) NOT NULL,
+ detalle_json JSON NULL,
+ activo TINYINT(1) NOT NULL DEFAULT 1,
+ fecha_creacion DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+ fecha_actualizacion DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+ INDEX idx_costos_usuario_nombre(id_usuario,nombre),
+ INDEX idx_costos_activo(activo),
+ CONSTRAINT fk_costos_usuario FOREIGN KEY(id_usuario) REFERENCES usuarios(id_usuario),
+ CONSTRAINT chk_costo_total CHECK(costo_total>=0)
 ) ENGINE=InnoDB;
 
 CREATE TABLE movimientos_stock (
