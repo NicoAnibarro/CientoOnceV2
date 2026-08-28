@@ -76,12 +76,12 @@ async function check(connection, rule, database) {
     return row.count > 0;
   }
   const [[column]] = await connection.query(
-    'SELECT column_type,is_nullable FROM information_schema.columns WHERE table_schema=? AND table_name=? AND column_name=?',
+    'SELECT column_type AS columnType,is_nullable AS isNullable FROM information_schema.columns WHERE table_schema=? AND table_name=? AND column_name=?',
     [database, table, name],
   );
   if (kind === 'column') return !!column;
-  if (kind === 'nullable') return column?.is_nullable === 'YES';
-  if (kind === 'enum') return !!column && String(column.column_type).includes(expected);
+  if (kind === 'nullable') return column?.columnType != null && column.isNullable === 'YES';
+  if (kind === 'enum') return !!column && String(column.columnType).includes(expected);
   return false;
 }
 
@@ -117,8 +117,17 @@ async function run() {
         console.log(`OMITIDA ${migration.id}: ya estaba aplicada`);
         continue;
       }
-      if (completed > 0) {
+      if (completed > 0 && migration.id !== '003_costos_y_capital') {
         throw new Error(`La migración ${migration.id} está parcialmente aplicada (${completed}/${migration.checks.length}). No se modificó esa etapa.`);
+      }
+      if (migration.id === '003_costos_y_capital') {
+        const [categories] = await connection.query(
+          "SELECT DISTINCT categoria FROM movimientos_caja WHERE LOWER(categoria) NOT IN ('pedido','pedidos','venta','ventas','compra','capital','inversion','inversión','retiro') AND LOWER(categoria) NOT LIKE 'compra%'",
+        );
+        if (categories.length) {
+          throw new Error(`Hay categorías históricas desconocidas: ${categories.map((item) => item.categoria).join(', ')}`);
+        }
+        if (completed > 0) console.log(`REPARANDO ${migration.id}: estado parcial seguro (${completed}/${migration.checks.length})`);
       }
       const sql = fs.readFileSync(path.join(__dirname, '../../database', migration.file), 'utf8')
         .replace(/^USE\s+[^;]+;/im, '');

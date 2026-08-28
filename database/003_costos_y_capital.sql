@@ -1,5 +1,12 @@
 USE ciento_once_v2;
 
+UPDATE movimientos_caja SET categoria='pedido'
+WHERE LOWER(categoria) IN ('pedido','pedidos','venta','ventas');
+UPDATE movimientos_caja SET categoria='compra'
+WHERE LOWER(categoria) LIKE 'compra%';
+UPDATE movimientos_caja SET categoria='capital'
+WHERE LOWER(categoria) IN ('capital','inversion','inversión','retiro');
+
 ALTER TABLE movimientos_caja
   MODIFY categoria ENUM('pedido','compra','capital') NOT NULL,
   MODIFY origen ENUM('pedido','compra','manual') NOT NULL,
