@@ -61,7 +61,7 @@ function Form({ title, children }) {
     <Screen>
       <KeyboardAvoidingView
         style={{ flex: 1 }}
-        behavior={Platform.OS === "ios" ? "padding" : undefined}
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
       >
         <ScrollView
           keyboardShouldPersistTaps="handled"
@@ -81,7 +81,7 @@ function KeyboardDialog({ children }) {
   return (
     <KeyboardAvoidingView
       style={s.modalCenter}
-      behavior={Platform.OS === "ios" ? "padding" : undefined}
+      behavior={Platform.OS === "ios" ? "padding" : "height"}
     >
       <ScrollView
         keyboardShouldPersistTaps="handled"
@@ -232,9 +232,9 @@ async function shareOrderReceipt(orderId) {
   });
 }
 
-function usePagination(items, resetKey) {
+function usePagination(items, resetKey, pageSize = PAGE_SIZE) {
   const [page, setPage] = useState(1);
-  const totalPages = Math.max(1, Math.ceil(items.length / PAGE_SIZE));
+  const totalPages = Math.max(1, Math.ceil(items.length / pageSize));
   useEffect(() => setPage(1), [resetKey]);
   useEffect(() => {
     if (page > totalPages) setPage(totalPages);
@@ -243,7 +243,7 @@ function usePagination(items, resetKey) {
     page,
     setPage,
     totalPages,
-    visible: items.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE),
+    visible: items.slice((page - 1) * pageSize, page * pageSize),
   };
 }
 
@@ -798,9 +798,27 @@ function LegacyCrudList({ route, navigation }) {
   };
   const save = async () => {
     try {
+      const payload = Object.fromEntries(
+        config.fields.map(([key]) => [key, form[key] ?? null]),
+      );
+      if (config.path === "productos") payload.categoria = form.categoria;
+      if (config.path === "clientes") {
+        ["latitud", "longitud", "google_place_id", "ubicacion_origen"].forEach(
+          (key) => {
+            payload[key] = form[key] ?? null;
+          },
+        );
+      }
+      if (config.path === "insumos") {
+        payload.tipo_medida = form.tipo_medida;
+        payload.unidad_referencia = form.unidad_referencia;
+        payload.fecha_precio = String(
+          form.fecha_precio || new Date().toISOString(),
+        ).slice(0, 10);
+      }
       editing
-        ? await api.put(`/${config.path}/${editing}`, form)
-        : await api.post(`/${config.path}`, form);
+        ? await api.put(`/${config.path}/${editing}`, payload)
+        : await api.post(`/${config.path}`, payload);
       setFormOpen(false);
       load();
     } catch (error) {
@@ -1142,9 +1160,27 @@ export function CrudList({ route, navigation }) {
   const pages = usePagination(filtered, `${search}-${order}-${category}`);
   const save = async () => {
     try {
+      const payload = Object.fromEntries(
+        config.fields.map(([key]) => [key, form[key] ?? null]),
+      );
+      if (config.path === "productos") payload.categoria = form.categoria;
+      if (config.path === "clientes") {
+        ["latitud", "longitud", "google_place_id", "ubicacion_origen"].forEach(
+          (key) => {
+            payload[key] = form[key] ?? null;
+          },
+        );
+      }
+      if (config.path === "insumos") {
+        payload.tipo_medida = form.tipo_medida;
+        payload.unidad_referencia = form.unidad_referencia;
+        payload.fecha_precio = String(
+          form.fecha_precio || new Date().toISOString(),
+        ).slice(0, 10);
+      }
       editing
-        ? await api.put(`/${config.path}/${editing}`, form)
-        : await api.post(`/${config.path}`, form);
+        ? await api.put(`/${config.path}/${editing}`, payload)
+        : await api.post(`/${config.path}`, payload);
       setFormOpen(false);
       load();
     } catch (error) {
@@ -2006,9 +2042,14 @@ function LegacyCaja({ navigation }) {
         observaciones: closeNotes,
       });
       setCloseOpen(false);
+      const difference = Number(response.data.data.diferencia);
       Alert.alert(
         "Caja cerrada",
-        `Diferencia: ${money(response.data.data.diferencia)}`,
+        difference === 0
+          ? "Caja exacta: el efectivo contado coincide con lo esperado."
+          : difference > 0
+            ? `Hay un sobrante de ${money(difference)}.`
+            : `Hay un faltante de ${money(Math.abs(difference))}.`,
       );
     } catch (error) {
       Alert.alert("No se pudo cerrar", message(error));
@@ -2201,6 +2242,14 @@ function LegacyCaja({ navigation }) {
               <IconButton icon="close" onPress={() => setCloseOpen(false)} />
             }
           />
+          <Card style={{ backgroundColor: colors.primarySoft }}>
+            <Text style={s.cardTitle}>¿Cómo funciona?</Text>
+            <Text style={s.meta}>
+              Suma los cobros en efectivo del día y los aportes de capital, y
+              resta compras y retiros en efectivo. Después compara ese monto
+              esperado con el dinero contado físicamente.
+            </Text>
+          </Card>
           {Object.entries(closeSummary?.metodos || {}).map(
             ([method, value]) => (
               <View key={method} style={s.spaceBetween}>
@@ -2213,6 +2262,10 @@ function LegacyCaja({ navigation }) {
             <Text style={s.cardTitle}>Efectivo esperado</Text>
             <Text style={s.totalValue}>
               {money(closeSummary?.efectivo_esperado)}
+            </Text>
+            <Text style={s.meta}>
+              Si dejaste cambio inicial, regístralo antes como aporte de
+              capital.
             </Text>
           </Card>
           <Input
@@ -3151,6 +3204,10 @@ export function NuevaCompra({ navigation }) {
       setPriorityIds((current) => [...new Set([...appliedIds, ...current])]);
       if (ticket.proveedor) setProvider(ticket.proveedor);
       if (ticket.fecha) setDate(ticket.fecha);
+      if (Number(ticket.descuento_importe_sugerido) > 0) {
+        setDiscountType("fijo");
+        setDiscountValue(String(ticket.descuento_importe_sugerido));
+      }
       setTicketOpen(false);
       Alert.alert(
         "Borrador aplicado",
@@ -3319,6 +3376,12 @@ export function NuevaCompra({ navigation }) {
                 Fecha: {ticket?.fecha || "No detectada"} · Total leído:{" "}
                 {money(ticket?.total)}
               </Text>
+              {Number(ticket?.descuento_importe_sugerido) > 0 ? (
+                <Text style={s.income}>
+                  Descuento detectado: −
+                  {money(ticket.descuento_importe_sugerido)}
+                </Text>
+              ) : null}
             </Card>
             {ticket?.advertencias?.map((warning, index) => (
               <View key={index} style={s.ticketWarning}>
@@ -3417,20 +3480,63 @@ export function Calculadora({ navigation }) {
   const [search, setSearch] = useState("");
   const [name, setName] = useState("");
   const [saving, setSaving] = useState(false);
+  const [supplyOpen, setSupplyOpen] = useState(false);
+  const [supplySaving, setSupplySaving] = useState(false);
+  const [newSupply, setNewSupply] = useState({
+    nombre: "",
+    descripcion: "",
+    precio_referencia: "",
+    cantidad_referencia: "",
+    tipo_medida: "peso",
+    unidad_referencia: "g",
+  });
+  const loadSupplies = useCallback(
+    () =>
+      api
+        .get("/insumos", { params: { limit: 100 } })
+        .then((response) => setRows(response.data.data)),
+    [],
+  );
   useEffect(() => {
-    api
-      .get("/insumos", { params: { limit: 100 } })
-      .then((response) => setRows(response.data.data));
-  }, []);
+    loadSupplies();
+  }, [loadSupplies]);
   const baseFactor = (unit) => (unit === "kg" || unit === "l" ? 1000 : 1);
   const filtered = rows.filter((item) =>
     item.nombre.toLowerCase().includes(search.toLowerCase()),
   );
-  const calculatorPages = usePagination(filtered, search);
+  const calculatorPages = usePagination(filtered, search, 5);
   const cost = (item) =>
     (Number(item.precio_referencia) * Number(used[item.id_insumo] || 0)) /
     (Number(item.cantidad_referencia) * baseFactor(item.unidad_referencia));
   const total = rows.reduce((sum, item) => sum + cost(item), 0);
+  const selectedSupplies = rows.filter(
+    (item) => Number(used[item.id_insumo]) > 0,
+  );
+  const createSupply = async () => {
+    try {
+      setSupplySaving(true);
+      await api.post("/insumos", {
+        ...newSupply,
+        precio_referencia: Number(newSupply.precio_referencia),
+        cantidad_referencia: Number(newSupply.cantidad_referencia),
+        fecha_precio: new Date().toISOString().slice(0, 10),
+      });
+      await loadSupplies();
+      setSupplyOpen(false);
+      setNewSupply({
+        nombre: "",
+        descripcion: "",
+        precio_referencia: "",
+        cantidad_referencia: "",
+        tipo_medida: "peso",
+        unidad_referencia: "g",
+      });
+    } catch (error) {
+      Alert.alert("No se pudo agregar el insumo", message(error));
+    } finally {
+      setSupplySaving(false);
+    }
+  };
   const save = async () => {
     const details = rows
       .filter((item) => Number(used[item.id_insumo]) > 0)
@@ -3475,6 +3581,12 @@ export function Calculadora({ navigation }) {
         title="Ver costos guardados"
         onPress={() => navigation.navigate("CostosProductos")}
       />
+      <Button
+        secondary
+        icon="add-circle-outline"
+        title="Agregar insumo sin salir"
+        onPress={() => setSupplyOpen(true)}
+      />
       <Input
         icon="search-outline"
         placeholder="Buscar insumo"
@@ -3514,6 +3626,28 @@ export function Calculadora({ navigation }) {
       <Card>
         <Text style={s.cardTitle}>Guardar este cálculo</Text>
         <Text style={s.meta}>Poné un nombre para encontrarlo después.</Text>
+        {selectedSupplies.length ? (
+          <View style={{ marginVertical: 10, gap: 7 }}>
+            {selectedSupplies.map((item) => (
+              <View key={item.id_insumo} style={s.spaceBetween}>
+                <Text style={[s.meta, { flex: 1 }]}>{item.nombre}</Text>
+                <Text style={s.meta}>
+                  {used[item.id_insumo]}{" "}
+                  {item.tipo_medida === "peso"
+                    ? "g"
+                    : item.tipo_medida === "volumen"
+                      ? "ml"
+                      : "unidad"}{" "}
+                  · {money(cost(item))}
+                </Text>
+              </View>
+            ))}
+          </View>
+        ) : (
+          <Text style={[s.meta, { marginVertical: 10 }]}>
+            Todavía no agregaste cantidades.
+          </Text>
+        )}
         <Input
           icon="fast-food-outline"
           placeholder="Ej. Torta de chocolate"
@@ -3527,6 +3661,106 @@ export function Calculadora({ navigation }) {
           onPress={save}
         />
       </Card>
+      <Modal
+        visible={supplyOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setSupplyOpen(false)}
+      >
+        <KeyboardDialog>
+          <Header
+            title="Agregar insumo"
+            subtitle="Tu cálculo actual se mantiene"
+            action={
+              <IconButton icon="close" onPress={() => setSupplyOpen(false)} />
+            }
+          />
+          <Input
+            placeholder="Nombre"
+            value={newSupply.nombre}
+            onChangeText={(value) =>
+              setNewSupply((current) => ({ ...current, nombre: value }))
+            }
+          />
+          <Input
+            placeholder="Descripción (opcional)"
+            value={newSupply.descripcion}
+            onChangeText={(value) =>
+              setNewSupply((current) => ({ ...current, descripcion: value }))
+            }
+          />
+          <Input
+            placeholder="Precio de referencia"
+            keyboardType="decimal-pad"
+            value={newSupply.precio_referencia}
+            onChangeText={(value) =>
+              setNewSupply((current) => ({
+                ...current,
+                precio_referencia: value.replace(",", "."),
+              }))
+            }
+          />
+          <Input
+            placeholder="Cantidad de referencia"
+            keyboardType="decimal-pad"
+            value={newSupply.cantidad_referencia}
+            onChangeText={(value) =>
+              setNewSupply((current) => ({
+                ...current,
+                cantidad_referencia: value.replace(",", "."),
+              }))
+            }
+          />
+          <Text style={s.label}>Tipo y unidad</Text>
+          <View style={s.chips}>
+            {[
+              ["peso", "g"],
+              ["volumen", "ml"],
+              ["unidad", "unidad"],
+            ].map(([type, unit]) => (
+              <Pressable
+                key={type}
+                onPress={() =>
+                  setNewSupply((current) => ({
+                    ...current,
+                    tipo_medida: type,
+                    unidad_referencia: unit,
+                  }))
+                }
+                style={[s.chip, newSupply.tipo_medida === type && s.chipActive]}
+              >
+                <Text
+                  style={
+                    newSupply.tipo_medida === type
+                      ? s.chipTextActive
+                      : s.chipText
+                  }
+                >
+                  {type}
+                </Text>
+              </Pressable>
+            ))}
+          </View>
+          <Text style={s.meta}>
+            La cantidad se carga en {newSupply.unidad_referencia}.
+          </Text>
+          <Button
+            icon="checkmark"
+            title={supplySaving ? "Guardando…" : "Guardar insumo"}
+            disabled={
+              supplySaving ||
+              !newSupply.nombre.trim() ||
+              !(Number(newSupply.cantidad_referencia) > 0)
+            }
+            onPress={createSupply}
+          />
+          <Button
+            secondary
+            title="Cancelar"
+            onPress={() => setSupplyOpen(false)}
+          />
+        </KeyboardDialog>
+      </Modal>
     </Form>
   );
 }

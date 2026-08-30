@@ -4,10 +4,13 @@ import { KeyboardAvoidingView, Platform, StyleSheet } from "react-native";
 import colors from "../theme/colors";
 export default function ScreenWrapper({ children, style }) {
   return (
-    <SafeAreaView edges={["top", "left", "right"]} style={[s.root, style]}>
+    <SafeAreaView
+      edges={["top", "bottom", "left", "right"]}
+      style={[s.root, style]}
+    >
       <KeyboardAvoidingView
         style={s.root}
-        behavior={Platform.OS === "ios" ? "padding" : undefined}
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
       >
         {children}
       </KeyboardAvoidingView>

@@ -2,7 +2,7 @@ module.exports = () => ({
   expo: {
     name: "Ciento Once V2",
     slug: "ciento-once-v2",
-    version: "1.2.0",
+    version: "1.2.1",
     orientation: "portrait",
     icon: "./assets/icon.png",
     userInterfaceStyle: "light",
@@ -10,7 +10,7 @@ module.exports = () => ({
     ios: { supportsTablet: true },
     android: {
       package: "com.nicoanibarro.cientooncev2",
-      versionCode: 2,
+      versionCode: 3,
       softwareKeyboardLayoutMode: "resize",
       config: {
         googleMaps: { apiKey: process.env.EXPO_PUBLIC_GOOGLE_MAPS_ANDROID_KEY },

@@ -13,7 +13,8 @@
     "db:migrate:004": "node scripts/migrate-004.js",
     "db:migrate:005": "node scripts/migrate-005.js",
     "db:migrate:006": "node scripts/migrate-006.js",
-    "db:migrate:production": "node scripts/migrate-production.js"
+    "db:migrate:production": "node scripts/migrate-production.js",
+    "db:clean:production": "node scripts/clean-production-business-data.js"
   },
   "keywords": [],
   "author": "",

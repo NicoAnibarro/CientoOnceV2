@@ -213,7 +213,7 @@ export default function LocationPicker({ visible, value, onClose, onConfirm }) {
     <Modal visible={visible} animationType="slide" onRequestClose={onClose}>
       <KeyboardAvoidingView
         style={styles.screen}
-        behavior={Platform.OS === "ios" ? "padding" : undefined}
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
       >
         <View style={styles.header}>
           <View style={{ flex: 1 }}>
