@@ -67,6 +67,15 @@ async function run() {
     GOOGLE_MAPS_SERVER_KEY: process.env.GOOGLE_MAPS_SERVER_KEY,
     GOOGLE_CLOUD_PROJECT_ID: process.env.GOOGLE_CLOUD_PROJECT_ID || credentials.project_id,
     GOOGLE_SERVICE_ACCOUNT_JSON_BASE64: Buffer.from(JSON.stringify(credentials), 'utf8').toString('base64'),
+    SMTP_HOST: process.env.SMTP_HOST || 'smtp.gmail.com',
+    SMTP_PORT: process.env.SMTP_PORT || '465',
+    SMTP_SECURE: process.env.SMTP_SECURE || 'true',
+    SMTP_USER: process.env.SMTP_USER,
+    SMTP_PASS: process.env.SMTP_PASS,
+    MAIL_FROM: process.env.MAIL_FROM || `Ciento Once <${process.env.SMTP_USER}>`,
+    REQUIRE_EMAIL_VERIFICATION: 'true',
+    PUBLIC_API_URL: process.env.PUBLIC_API_URL || 'https://ciento-once-v2-api.onrender.com/api',
+    PRIVACY_EMAIL: process.env.PRIVACY_EMAIL || 'cientoonce2026@gmail.com',
   };
   for (const [key, value] of Object.entries(values)) {
     if (!value) throw new Error(`Falta ${key} en la configuración local`);
