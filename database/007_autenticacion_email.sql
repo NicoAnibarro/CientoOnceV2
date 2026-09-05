@@ -1,9 +1,9 @@
 USE ciento_once_v2;
 
 ALTER TABLE usuarios
-  ADD COLUMN IF NOT EXISTS email_verificado TINYINT(1) NOT NULL DEFAULT 0 AFTER password_hash,
-  ADD COLUMN IF NOT EXISTS fecha_verificacion_email DATETIME NULL AFTER email_verificado,
-  ADD COLUMN IF NOT EXISTS sesion_version INT UNSIGNED NOT NULL DEFAULT 0 AFTER fecha_verificacion_email;
+  ADD COLUMN email_verificado TINYINT(1) NOT NULL DEFAULT 0 AFTER password_hash,
+  ADD COLUMN fecha_verificacion_email DATETIME NULL AFTER email_verificado,
+  ADD COLUMN sesion_version INT UNSIGNED NOT NULL DEFAULT 0 AFTER fecha_verificacion_email;
 
 UPDATE usuarios
 SET email_verificado=1,
