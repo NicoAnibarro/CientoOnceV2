@@ -57,6 +57,32 @@ const migrations = [
       ['table', 'pagos_integracion'],
     ],
   },
+  {
+    id: '007_autenticacion_email',
+    file: '007_autenticacion_email.sql',
+    checks: [
+      ['column', 'usuarios', 'email_verificado'],
+      ['column', 'usuarios', 'fecha_verificacion_email'],
+      ['column', 'usuarios', 'sesion_version'],
+      ['table', 'tokens_autenticacion'],
+    ],
+  },
+  {
+    id: '008_identidad_flyers',
+    file: '008_identidad_flyers.sql',
+    checks: [
+      ['column', 'configuraciones_comerciales', 'paleta_visual'],
+      ['column', 'configuraciones_comerciales', 'logo_mime'],
+      ['column', 'configuraciones_comerciales', 'logo_imagen'],
+    ],
+  },
+  {
+    id: '009_paleta_aplicacion',
+    file: '009_paleta_aplicacion.sql',
+    checks: [
+      ['column', 'configuraciones_comerciales', 'paleta_app'],
+    ],
+  },
 ];
 
 async function check(connection, rule, database) {

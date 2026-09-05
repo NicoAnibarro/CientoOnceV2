@@ -8,6 +8,7 @@ import {
   Modal,
   Platform,
   Pressable,
+  RefreshControl,
   ScrollView,
   StyleSheet,
   Switch,
@@ -37,12 +38,35 @@ import {
   Pagination,
   money,
 } from "../components/UI";
-import { api, message } from "../api/api";
+import { api, API_BASE_URL, message } from "../api/api";
 import { useAuth } from "../context/AuthContext";
-import colors from "../theme/colors";
+import { useAppTheme } from "../context/ThemeContext";
+import colors, { registerThemeListener } from "../theme/colors";
 import LocationPicker from "../components/LocationPicker";
 
 const PAGE_SIZE = 6;
+const PRIVACY_URL = `${API_BASE_URL.replace(/\/api\/?$/, "")}/api/privacidad`;
+const DELETE_ACCOUNT_URL = `${API_BASE_URL.replace(/\/api\/?$/, "")}/api/eliminar-cuenta`;
+const VISUAL_PALETTES = [
+  ["verde_crema", "Verde crema", ["#3CB371", "#FFFAF0", "#111111"]],
+  ["tierra", "Tierra", ["#C66A4A", "#EAD8C0", "#5A3825"]],
+  ["oceano", "Océano", ["#126E82", "#D8F0F3", "#173B57"]],
+  ["berries", "Berries", ["#8D244D", "#F4D5DF", "#40232E"]],
+  ["moderno", "Moderno", ["#111111", "#FFFFFF", "#E5B93F"]],
+];
+const localDate = (date = new Date()) =>
+  new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Argentina/Buenos_Aires",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(date);
+const localDateTime = (value) =>
+  new Intl.DateTimeFormat("es-AR", {
+    timeZone: "America/Argentina/Buenos_Aires",
+    dateStyle: "short",
+    timeStyle: "short",
+  }).format(new Date(value));
 
 function Header({ title, subtitle, action }) {
   return (
@@ -56,23 +80,32 @@ function Header({ title, subtitle, action }) {
   );
 }
 
-function Form({ title, children }) {
+function Form({ title, children, onRefresh, centered = false }) {
+  const refresh = usePullRefresh(onRefresh);
   return (
     <Screen>
-      <KeyboardAvoidingView
+      <ScrollView
         style={{ flex: 1 }}
-        behavior={Platform.OS === "ios" ? "padding" : "height"}
+        keyboardShouldPersistTaps="handled"
+        keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}
+        automaticallyAdjustKeyboardInsets
+        contentInsetAdjustmentBehavior="automatic"
+        showsVerticalScrollIndicator={false}
+        refreshControl={
+          onRefresh ? (
+            <RefreshControl
+              refreshing={refresh.refreshing}
+              onRefresh={refresh.onRefresh}
+              tintColor={colors.primary}
+              colors={[colors.primary]}
+            />
+          ) : undefined
+        }
+        contentContainerStyle={[s.form, centered && s.centeredForm]}
       >
-        <ScrollView
-          keyboardShouldPersistTaps="handled"
-          keyboardDismissMode="interactive"
-          automaticallyAdjustKeyboardInsets
-          contentContainerStyle={s.form}
-        >
-          <Header title={title} />
-          {children}
-        </ScrollView>
-      </KeyboardAvoidingView>
+        {title ? <Header title={title} /> : null}
+        {children}
+      </ScrollView>
     </Screen>
   );
 }
@@ -137,7 +170,7 @@ function DateField({ value, onChange, label = "Fecha" }) {
           mode="date"
           onChange={(_, date) => {
             setOpen(Platform.OS === "ios");
-            if (date) onChange(date.toISOString().slice(0, 10));
+            if (date) onChange(localDate(date));
           }}
         />
       ) : null}
@@ -232,6 +265,75 @@ async function shareOrderReceipt(orderId) {
   });
 }
 
+async function openOrderWhatsApp(order) {
+  const delivered = order.estado === "entregado";
+  const paid = !!order.pagado;
+  const canceled = order.estado === "cancelado";
+  const rawDate = String(order.fecha_entrega || "").slice(0, 10);
+  const deliveryDate = /^\d{4}-\d{2}-\d{2}$/.test(rawDate)
+    ? new Intl.DateTimeFormat("es-AR", {
+        weekday: "long",
+        day: "numeric",
+        month: "long",
+      }).format(new Date(`${rawDate}T12:00:00`))
+    : rawDate;
+  const greeting = `¡Hola, ${order.cliente_nombre}! 👋`;
+  const detail = order.detalle_resumido
+    ? `Tu pedido incluye: ${order.detalle_resumido}.`
+    : "";
+  let messageLines;
+  if (canceled) {
+    messageLines = [
+      greeting,
+      `Queríamos contarte que tu pedido #${order.id_pedido} figura como cancelado.`,
+      "Si querés retomarlo o necesitás que preparemos algo nuevo, escribinos. Será un gusto ayudarte 😊",
+    ];
+  } else if (delivered && !paid) {
+    messageLines = [
+      greeting,
+      "Esperamos que hayas disfrutado mucho tu pedido 💚",
+      `Te dejamos un recordatorio amable: quedó pendiente el pago de ${money(order.total)}.`,
+      "Cuando puedas realizarlo, avisanos por aquí. ¡Muchas gracias!",
+    ];
+  } else if (!delivered && !paid) {
+    messageLines = [
+      greeting,
+      "¡Tu pedido ya está anotado y lo estamos preparando con mucho cariño! ✨",
+      detail,
+      `La entrega está prevista para el ${deliveryDate} y el total es ${money(order.total)}.`,
+      "El pago todavía está pendiente. Cuando lo realices, podés avisarnos por aquí. ¡Gracias por elegirnos!",
+    ];
+  } else if (!delivered && paid) {
+    messageLines = [
+      greeting,
+      "¡Muchas gracias! Ya recibimos el pago de tu pedido 💚",
+      detail,
+      `La entrega está prevista para el ${deliveryDate}. Te avisaremos si surge alguna novedad.`,
+      "¡Gracias por elegirnos!",
+    ];
+  } else {
+    messageLines = [
+      greeting,
+      "¡Muchas gracias por tu compra! Tu pedido ya fue entregado y el pago quedó registrado 💚",
+      "Esperamos que lo hayas disfrutado. Cuando quieras volver a pedir, estaremos encantados de ayudarte 😊",
+    ];
+  }
+  const messageText = messageLines.filter(Boolean).join("\n\n");
+  let digits = String(order.cliente_telefono || "").replace(/\D/g, "");
+  if (digits.startsWith("0")) digits = digits.slice(1);
+  if (!digits.startsWith("54")) {
+    digits = digits.replace(/^(\d{2,4})15/, "$1");
+    digits = `549${digits}`;
+  } else if (!digits.startsWith("549")) {
+    digits = `549${digits.slice(2)}`;
+  }
+  const url =
+    digits.length >= 11
+      ? `https://wa.me/${digits}?text=${encodeURIComponent(messageText)}`
+      : `https://wa.me/?text=${encodeURIComponent(messageText)}`;
+  await Linking.openURL(url);
+}
+
 function usePagination(items, resetKey, pageSize = PAGE_SIZE) {
   const [page, setPage] = useState(1);
   const totalPages = Math.max(1, Math.ceil(items.length / pageSize));
@@ -247,58 +349,137 @@ function usePagination(items, resetKey, pageSize = PAGE_SIZE) {
   };
 }
 
+function usePullRefresh(load) {
+  const [refreshing, setRefreshing] = useState(false);
+  const onRefresh = useCallback(async () => {
+    try {
+      setRefreshing(true);
+      await load();
+    } finally {
+      setRefreshing(false);
+    }
+  }, [load]);
+  return { refreshing, onRefresh };
+}
+
 export function Login({ navigation }) {
   const { login, employeeLogin } = useAuth();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
+  const [serverInfo, setServerInfo] = useState(null);
   const [employeeOpen, setEmployeeOpen] = useState(false),
     [employeeEmail, setEmployeeEmail] = useState(""),
     [employeePin, setEmployeePin] = useState("");
+  useEffect(() => {
+    if (!__DEV__) return;
+    api
+      .get("/health", { timeout: 5000 })
+      .then((response) => setServerInfo(response.data))
+      .catch(() => setServerInfo({ ok: false }));
+  }, []);
   const send = async () => {
     try {
       setBusy(true);
       await login(email.trim().toLowerCase(), password);
     } catch (error) {
+      if (error.response?.data?.codigo === "EMAIL_NO_VERIFICADO") {
+        navigation.navigate("VerificarCorreo", {
+          email: email.trim().toLowerCase(),
+        });
+        return;
+      }
       Alert.alert("No se pudo ingresar", message(error));
     } finally {
       setBusy(false);
     }
   };
   return (
-    <Form title="Ciento Once">
-      <Text style={s.welcome}>Gestioná tu negocio de forma simple</Text>
-      <Input
-        icon="mail-outline"
-        placeholder="Email"
-        autoCapitalize="none"
-        keyboardType="email-address"
-        value={email}
-        onChangeText={setEmail}
-      />
-      <Input
-        icon="lock-closed-outline"
-        placeholder="Contraseña"
-        secureTextEntry
-        value={password}
-        onChangeText={setPassword}
-      />
-      <Button
-        title={busy ? "Ingresando…" : "Ingresar"}
-        disabled={busy}
-        onPress={send}
-      />
+    <Form centered>
+      <View style={s.loginHero}>
+        <View style={s.loginMark}>
+          <Ionicons name="storefront-outline" size={36} color="#FFF" />
+        </View>
+        <Text style={s.loginEyebrow}>GESTIÓN PARA TU NEGOCIO</Text>
+        <Text style={s.loginTitle}>Ciento Once</Text>
+        <Text style={s.loginSubtitle}>
+          Ventas, stock y administración en un solo lugar
+        </Text>
+      </View>
+      <Card style={s.loginCard}>
+        <Text style={s.loginCardTitle}>Bienvenido</Text>
+        <Text style={s.loginCardSubtitle}>Ingresa para continuar</Text>
+        <Input
+          icon="mail-outline"
+          placeholder="Email"
+          autoCapitalize="none"
+          autoCorrect={false}
+          keyboardType="email-address"
+          textContentType="username"
+          value={email}
+          onChangeText={setEmail}
+        />
+        <Input
+          icon="lock-closed-outline"
+          placeholder="Contraseña"
+          secureTextEntry
+          textContentType="password"
+          value={password}
+          onChangeText={setPassword}
+          onSubmitEditing={send}
+        />
+        <Button
+          icon="arrow-forward-outline"
+          title={busy ? "Ingresando…" : "Ingresar"}
+          disabled={busy}
+          onPress={send}
+        />
+        <Pressable
+          style={s.loginTextAction}
+          onPress={() => navigation.navigate("RecuperarPassword", { email })}
+        >
+          <Text style={s.loginTextActionLabel}>Olvidé mi contraseña</Text>
+        </Pressable>
+      </Card>
+      <View style={s.loginCreateRow}>
+        <Text style={s.loginCreateText}>¿Todavía no tienes una cuenta?</Text>
+        <Pressable onPress={() => navigation.navigate("Registro")}>
+          <Text style={s.loginCreateLink}>Crear cuenta</Text>
+        </Pressable>
+      </View>
       <Button
         secondary
-        title="Crear una cuenta"
-        onPress={() => navigation.navigate("Registro")}
-      />
-      <Button
-        secondary
+        compact
         icon="people-outline"
         title="Acceso de empleado"
+        style={s.loginEmployeeButton}
         onPress={() => setEmployeeOpen(true)}
       />
+      <Pressable
+        style={s.loginTextAction}
+        onPress={() => navigation.navigate("PoliticaPrivacidad")}
+      >
+        <Text style={s.loginPrivacyLink}>Privacidad y uso de datos</Text>
+      </Pressable>
+      {__DEV__ ? (
+        <View style={s.loginDevStatus}>
+          <Text style={s.caption}>
+            Servidor local: {serverInfo?.ok ? "conectado" : "sin conexión"}
+          </Text>
+          <Text style={s.caption}>{API_BASE_URL}</Text>
+          {serverInfo?.ok ? (
+            <>
+              <Text style={s.caption}>
+                Verificación por email:{" "}
+                {serverInfo.email_activo ? "activa" : "inactiva"}
+              </Text>
+              <Text style={s.caption}>
+                Versión del backend: {serverInfo.version || "anterior"}
+              </Text>
+            </>
+          ) : null}
+        </View>
+      ) : null}
       <Modal
         visible={employeeOpen}
         transparent
@@ -368,7 +549,20 @@ export function Registro({ navigation }) {
       return Alert.alert("Revisá los datos", "Las contraseñas no coinciden");
     try {
       setBusy(true);
-      await register(value);
+      const response = await register({
+        nombre: value.nombre,
+        email: value.email.trim().toLowerCase(),
+        password: value.password,
+      });
+      if (response.data.data?.requiere_verificacion) {
+        navigation.replace("VerificarCorreo", {
+          email: value.email.trim().toLowerCase(),
+        });
+      } else {
+        Alert.alert("Cuenta creada", "Ya puedes iniciar sesión.", [
+          { text: "Continuar", onPress: () => navigation.replace("Login") },
+        ]);
+      }
     } catch (error) {
       Alert.alert("No se pudo crear la cuenta", message(error));
     } finally {
@@ -392,7 +586,7 @@ export function Registro({ navigation }) {
       />
       <Input
         icon="lock-closed-outline"
-        placeholder="Contraseña (6 a 12 caracteres)"
+        placeholder="Contraseña (8 a 72 caracteres)"
         secureTextEntry
         value={value.password}
         onChangeText={(text) => change("password", text)}
@@ -410,6 +604,187 @@ export function Registro({ navigation }) {
         onPress={send}
       />
       <Button secondary title="Regresar" onPress={() => navigation.goBack()} />
+    </Form>
+  );
+}
+
+export function VerificarCorreo({ navigation, route }) {
+  const [email, setEmail] = useState(route?.params?.email || "");
+  const [code, setCode] = useState("");
+  const [busy, setBusy] = useState(false);
+  const verify = async () => {
+    try {
+      setBusy(true);
+      await api.post("/auth/verify-email", {
+        email: email.trim().toLowerCase(),
+        codigo: code.trim(),
+      });
+      Alert.alert("Correo verificado", "Ya puedes iniciar sesión.", [
+        { text: "Continuar", onPress: () => navigation.navigate("Login") },
+      ]);
+    } catch (error) {
+      Alert.alert("No se pudo verificar", message(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const resend = async () => {
+    try {
+      setBusy(true);
+      const response = await api.post("/auth/resend-verification", {
+        email: email.trim().toLowerCase(),
+      });
+      Alert.alert("Verificación", response.data.mensaje);
+    } catch (error) {
+      Alert.alert("No se pudo reenviar", message(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <Form title="Verificar correo">
+      <Text style={s.meta}>
+        Revisa Gmail y escribe el código de seis dígitos. También puedes tocar
+        el enlace incluido en el mensaje.
+      </Text>
+      <Input
+        icon="mail-outline"
+        placeholder="Email"
+        autoCapitalize="none"
+        keyboardType="email-address"
+        value={email}
+        onChangeText={setEmail}
+      />
+      <Input
+        icon="shield-checkmark-outline"
+        placeholder="Código de 6 dígitos"
+        keyboardType="number-pad"
+        maxLength={6}
+        value={code}
+        onChangeText={setCode}
+      />
+      <Button
+        icon="checkmark"
+        title={busy ? "Verificando…" : "Verificar cuenta"}
+        disabled={busy || code.length !== 6}
+        onPress={verify}
+      />
+      <Button
+        secondary
+        title="Reenviar código"
+        disabled={busy || !email.trim()}
+        onPress={resend}
+      />
+      <Button
+        secondary
+        title="Volver al ingreso"
+        onPress={() => navigation.navigate("Login")}
+      />
+    </Form>
+  );
+}
+
+export function RecuperarPassword({ navigation, route }) {
+  const [email, setEmail] = useState(route?.params?.email || "");
+  const [sent, setSent] = useState(false);
+  const [code, setCode] = useState("");
+  const [password, setPassword] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [busy, setBusy] = useState(false);
+  const request = async () => {
+    try {
+      setBusy(true);
+      const response = await api.post("/auth/forgot-password", {
+        email: email.trim().toLowerCase(),
+      });
+      setSent(true);
+      Alert.alert("Revisa tu correo", response.data.mensaje);
+    } catch (error) {
+      Alert.alert("No se pudo solicitar", message(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const reset = async () => {
+    if (password !== confirm)
+      return Alert.alert("Revisa los datos", "Las contraseñas no coinciden");
+    try {
+      setBusy(true);
+      await api.post("/auth/reset-password", {
+        email: email.trim().toLowerCase(),
+        codigo: code.trim(),
+        password,
+      });
+      Alert.alert("Contraseña actualizada", "Ya puedes iniciar sesión.", [
+        { text: "Continuar", onPress: () => navigation.navigate("Login") },
+      ]);
+    } catch (error) {
+      Alert.alert("No se pudo cambiar", message(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <Form title="Recuperar contraseña">
+      <Input
+        icon="mail-outline"
+        placeholder="Email de la cuenta"
+        autoCapitalize="none"
+        keyboardType="email-address"
+        editable={!sent}
+        value={email}
+        onChangeText={setEmail}
+      />
+      {!sent ? (
+        <Button
+          icon="mail-outline"
+          title={busy ? "Enviando…" : "Enviar código"}
+          disabled={busy || !email.trim()}
+          onPress={request}
+        />
+      ) : (
+        <>
+          <Input
+            icon="shield-outline"
+            placeholder="Código de 6 dígitos"
+            keyboardType="number-pad"
+            maxLength={6}
+            value={code}
+            onChangeText={setCode}
+          />
+          <Input
+            icon="lock-closed-outline"
+            placeholder="Contraseña nueva (8 a 72 caracteres)"
+            secureTextEntry
+            value={password}
+            onChangeText={setPassword}
+          />
+          <Input
+            icon="lock-closed-outline"
+            placeholder="Confirmar contraseña"
+            secureTextEntry
+            value={confirm}
+            onChangeText={setConfirm}
+          />
+          <Button
+            icon="checkmark"
+            title={busy ? "Actualizando…" : "Cambiar contraseña"}
+            disabled={busy || code.length !== 6 || password.length < 8}
+            onPress={reset}
+          />
+          <Button
+            secondary
+            title="Enviar otro código"
+            disabled={busy}
+            onPress={request}
+          />
+        </>
+      )}
+      <Button
+        secondary
+        title="Cancelar"
+        onPress={() => navigation.navigate("Login")}
+      />
     </Form>
   );
 }
@@ -473,19 +848,19 @@ export function Home({ navigation }) {
   const { session, logout } = useAuth();
   const [data, setData] = useState(null);
   const [menu, setMenu] = useState(false);
+  const load = useCallback(
+    () => api.get("/dashboard").then((response) => setData(response.data.data)),
+    [],
+  );
+  const refresh = usePullRefresh(load);
   useFocusEffect(
     useCallback(() => {
       let active = true;
-      api
-        .get("/dashboard")
-        .then((response) => {
-          if (active) setData(response.data.data);
-        })
-        .catch(() => {});
+      load().catch(() => {});
       return () => {
         active = false;
       };
-    }, []),
+    }, [load]),
   );
   const go = (name) => {
     setMenu(false);
@@ -504,7 +879,16 @@ export function Home({ navigation }) {
   }).format(new Date());
   return (
     <Screen>
-      <ScrollView contentContainerStyle={s.page}>
+      <ScrollView
+        contentContainerStyle={s.page}
+        refreshControl={
+          <RefreshControl
+            refreshing={refresh.refreshing}
+            onRefresh={refresh.onRefresh}
+            colors={[colors.primary]}
+          />
+        }
+      >
         <Header
           title={`Hola, ${session?.usuario?.nombre || ""}`}
           subtitle={todayLabel.charAt(0).toUpperCase() + todayLabel.slice(1)}
@@ -649,11 +1033,13 @@ export function Home({ navigation }) {
           <Pressable style={s.drawer} onPress={() => {}}>
             <Text style={s.drawerTitle}>Menú</Text>
             {[
+              ["person-circle-outline", "Mi perfil", "Perfil"],
               ["people-outline", "Clientes", "Clientes"],
               ["cube-outline", "Productos", "Productos"],
               ["leaf-outline", "Insumos", "Insumos"],
               ["calculator-outline", "Calculadora de costos", "Calculadora"],
               ["pricetags-outline", "Costos guardados", "CostosProductos"],
+              ["color-palette-outline", "Creador de flyers", "Flyers"],
               ["map-outline", "Rutas de reparto", "RutasReparto"],
               ["business-outline", "Centro comercial", "CentroComercial"],
               ["help-circle-outline", "Ayuda", "Ayuda"],
@@ -734,7 +1120,7 @@ const crudConfig = {
     defaults: {
       tipo_medida: "peso",
       unidad_referencia: "g",
-      fecha_precio: new Date().toISOString().slice(0, 10),
+      fecha_precio: localDate(),
     },
   },
 };
@@ -1122,7 +1508,7 @@ export function CrudList({ route, navigation }) {
     [loading, setLoading] = useState(true);
   const load = useCallback(() => {
     setLoading(true);
-    Promise.all([
+    return Promise.all([
       api.get(`/${config.path}`, { params: { limit: 100 } }),
       isProducts ? api.get("/categorias-productos") : Promise.resolve(null),
     ])
@@ -1136,6 +1522,7 @@ export function CrudList({ route, navigation }) {
       .catch((error) => Alert.alert("Error", message(error)))
       .finally(() => setLoading(false));
   }, [config.path, isProducts]);
+  const refresh = usePullRefresh(load);
   useFocusEffect(
     useCallback(() => {
       load();
@@ -1270,6 +1657,7 @@ export function CrudList({ route, navigation }) {
   return (
     <Screen>
       <FlatList
+        {...refresh}
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode="on-drag"
         contentContainerStyle={s.page}
@@ -1542,7 +1930,7 @@ export function CategoriasProductos() {
     );
   const pages = usePagination(rows, rows.length);
   return (
-    <Form title="Categorías de productos">
+    <Form title="Categorías de productos" onRefresh={load}>
       <Card>
         <Text style={s.meta}>
           Creá categorías propias para adaptar la aplicación a cualquier
@@ -1589,7 +1977,9 @@ function StatusPill({ active, text }) {
 export function Pedidos({ navigation }) {
   const [rows, setRows] = useState([]);
   const [order, setOrder] = useState("fechaAsc");
-  const [filter, setFilter] = useState("todos");
+  const [deliveryFilter, setDeliveryFilter] = useState("todos");
+  const [paymentFilter, setPaymentFilter] = useState("todos");
+  const [search, setSearch] = useState("");
   const load = useCallback(
     () =>
       api
@@ -1598,6 +1988,7 @@ export function Pedidos({ navigation }) {
         .catch((error) => Alert.alert("Error", message(error))),
     [],
   );
+  const refresh = usePullRefresh(load);
   useFocusEffect(
     useCallback(() => {
       load();
@@ -1606,15 +1997,40 @@ export function Pedidos({ navigation }) {
   const filtered = useMemo(
     () =>
       rows
-        .filter((item) => filter === "todos" || item.estado === filter)
-        .sort((a, b) =>
-          order === "fechaAsc"
+        .filter(
+          (item) =>
+            deliveryFilter === "todos" || item.estado === deliveryFilter,
+        )
+        .filter(
+          (item) =>
+            paymentFilter === "todos" ||
+            (paymentFilter === "pagados" ? !!item.pagado : !item.pagado),
+        )
+        .filter(
+          (item) =>
+            !search.trim() ||
+            item.cliente_nombre.toLowerCase().includes(search.toLowerCase()) ||
+            String(item.detalle_resumido || "")
+              .toLowerCase()
+              .includes(search.toLowerCase()),
+        )
+        .sort((a, b) => {
+          if (deliveryFilter === "todos") {
+            const priority = { pendiente: 0, entregado: 1, cancelado: 2 };
+            const stateDifference =
+              (priority[a.estado] ?? 3) - (priority[b.estado] ?? 3);
+            if (stateDifference) return stateDifference;
+          }
+          return order === "fechaAsc"
             ? String(a.fecha_entrega).localeCompare(String(b.fecha_entrega))
-            : String(b.fecha_entrega).localeCompare(String(a.fecha_entrega)),
-        ),
-    [rows, order, filter],
+            : String(b.fecha_entrega).localeCompare(String(a.fecha_entrega));
+        }),
+    [rows, order, deliveryFilter, paymentFilter, search],
   );
-  const pages = usePagination(filtered, `${order}-${filter}`);
+  const pages = usePagination(
+    filtered,
+    `${order}-${deliveryFilter}-${paymentFilter}-${search}`,
+  );
   const toggleDelivered = async (item) => {
     await api.patch(`/pedidos/${item.id_pedido}/estado`, {
       estado: item.estado === "entregado" ? "pendiente" : "entregado",
@@ -1624,6 +2040,7 @@ export function Pedidos({ navigation }) {
   return (
     <Screen>
       <FlatList
+        {...refresh}
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode="on-drag"
         contentContainerStyle={s.page}
@@ -1642,17 +2059,53 @@ export function Pedidos({ navigation }) {
                 />
               }
             />
+            <Input
+              icon="search-outline"
+              placeholder="Buscar por cliente o producto"
+              value={search}
+              onChangeText={setSearch}
+            />
+            <Text style={s.filterLabel}>Entrega</Text>
             <View style={s.filterRow}>
-              {["todos", "pendiente", "entregado"].map((value) => (
+              {[
+                ["todos", "Todos"],
+                ["pendiente", "Pendientes"],
+                ["entregado", "Entregados"],
+                ["cancelado", "Cancelados"],
+              ].map(([value, label]) => (
                 <Pressable
                   key={value}
-                  onPress={() => setFilter(value)}
-                  style={[s.chip, filter === value && s.chipActive]}
+                  onPress={() => setDeliveryFilter(value)}
+                  style={[s.chip, deliveryFilter === value && s.chipActive]}
                 >
                   <Text
-                    style={filter === value ? s.chipTextActive : s.chipText}
+                    style={
+                      deliveryFilter === value ? s.chipTextActive : s.chipText
+                    }
                   >
-                    {value}
+                    {label}
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
+            <Text style={s.filterLabel}>Cobro</Text>
+            <View style={s.filterRow}>
+              {[
+                ["todos", "Todos"],
+                ["sin_pagar", "Sin cobrar"],
+                ["pagados", "Pagados"],
+              ].map(([value, label]) => (
+                <Pressable
+                  key={value}
+                  onPress={() => setPaymentFilter(value)}
+                  style={[s.chip, paymentFilter === value && s.chipActive]}
+                >
+                  <Text
+                    style={
+                      paymentFilter === value ? s.chipTextActive : s.chipText
+                    }
+                  >
+                    {label}
                   </Text>
                 </Pressable>
               ))}
@@ -1728,6 +2181,17 @@ export function Pedidos({ navigation }) {
             </View>
             <View style={s.actionRow}>
               <IconButton
+                icon="logo-whatsapp"
+                onPress={() =>
+                  openOrderWhatsApp(item).catch(() =>
+                    Alert.alert(
+                      "No se pudo abrir WhatsApp",
+                      "Comprueba que WhatsApp esté instalado y revisa el teléfono del cliente.",
+                    ),
+                  )
+                }
+              />
+              <IconButton
                 icon="share-outline"
                 onPress={() =>
                   shareOrderReceipt(item.id_pedido).catch((error) =>
@@ -1783,6 +2247,7 @@ export function Stock() {
   const [rows, setRows] = useState([]);
   const [search, setSearch] = useState("");
   const [order, setOrder] = useState("az");
+  const [availability, setAvailability] = useState("todos");
   const [selected, setSelected] = useState(null);
   const [quantity, setQuantity] = useState("");
   const [reason, setReason] = useState("");
@@ -1800,6 +2265,7 @@ export function Stock() {
         .catch((error) => Alert.alert("Error", message(error))),
     [],
   );
+  const refresh = usePullRefresh(load);
   useFocusEffect(
     useCallback(() => {
       load();
@@ -1811,38 +2277,46 @@ export function Stock() {
         .filter((item) =>
           item.nombre.toLowerCase().includes(search.toLowerCase()),
         )
+        .filter((item) =>
+          availability === "con_stock"
+            ? Number(item.stock_actual) > 0
+            : availability === "sin_stock"
+              ? Number(item.stock_actual) <= 0
+              : true,
+        )
         .sort((a, b) =>
           order === "az"
             ? a.nombre.localeCompare(b.nombre)
             : b.nombre.localeCompare(a.nombre),
         ),
-    [rows, search, order],
+    [rows, search, order, availability],
   );
-  const pages = usePagination(filtered, `${search}-${order}`);
-  const move = async (type) => {
-    const value = Number(quantity.replace(",", "."));
-    if (!Number.isInteger(value) || value < 1)
+  const pages = usePagination(filtered, `${search}-${order}-${availability}`);
+  const setExactStock = async () => {
+    const target = Number(quantity.replace(",", "."));
+    if (!Number.isInteger(target))
       return Alert.alert(
-        "Cantidad inválida",
-        "Ingresá un número entero mayor a cero.",
+        "Stock inválido",
+        "Ingresa un número entero. El stock puede ser cero o negativo.",
       );
     try {
       await api.post(`/stock/productos/${selected.id_producto}`, {
-        tipo: type,
-        cantidad: value,
-        motivo: reason || "Ajuste manual",
+        tipo: "establecer",
+        cantidad: target,
+        motivo: reason || `Stock establecido manualmente en ${target}`,
       });
       setSelected(null);
       setQuantity("");
       setReason("");
       load();
     } catch (error) {
-      Alert.alert("No se pudo modificar", message(error));
+      Alert.alert("No se pudo establecer el stock", message(error));
     }
   };
   return (
     <Screen>
       <FlatList
+        {...refresh}
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode="on-drag"
         contentContainerStyle={s.page}
@@ -1875,6 +2349,27 @@ export function Stock() {
                 setOrder((current) => (current === "az" ? "za" : "az"))
               }
             />
+            <View style={s.filterRow}>
+              {[
+                ["todos", "Todos"],
+                ["con_stock", "Con stock"],
+                ["sin_stock", "Sin stock"],
+              ].map(([value, label]) => (
+                <Pressable
+                  key={value}
+                  onPress={() => setAvailability(value)}
+                  style={[s.chip, availability === value && s.chipActive]}
+                >
+                  <Text
+                    style={
+                      availability === value ? s.chipTextActive : s.chipText
+                    }
+                  >
+                    {label}
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
           </>
         }
         ListEmptyComponent={<Empty text="No hay productos" />}
@@ -1904,7 +2399,10 @@ export function Stock() {
               secondary
               icon="options-outline"
               title="Editar stock"
-              onPress={() => setSelected(item)}
+              onPress={() => {
+                setSelected(item);
+                setQuantity(String(item.stock_actual));
+              }}
             />
           </Card>
         )}
@@ -1924,41 +2422,45 @@ export function Stock() {
               <IconButton icon="close" onPress={() => setSelected(null)} />
             }
           />
-          <Input
-            icon="layers-outline"
-            placeholder="Cantidad"
-            keyboardType="number-pad"
-            value={quantity}
-            onChangeText={setQuantity}
-          />
+          <View style={s.stockStepper}>
+            <IconButton
+              icon="remove"
+              onPress={() => setQuantity(String(Number(quantity || 0) - 1))}
+            />
+            <Input
+              style={{ flex: 1, marginBottom: 0 }}
+              placeholder="Stock final"
+              keyboardType="number-pad"
+              value={quantity}
+              onChangeText={setQuantity}
+            />
+            <IconButton
+              icon="add"
+              active
+              onPress={() => setQuantity(String(Number(quantity || 0) + 1))}
+            />
+          </View>
+          <Text style={s.meta}>
+            Usa − / + de a una unidad o escribe el valor exacto, incluido 0.
+          </Text>
           <Input
             icon="chatbubble-outline"
             placeholder="Motivo (opcional)"
             value={reason}
             onChangeText={setReason}
           />
-          <View style={s.actionRow}>
-            <Button
-              secondary
-              icon="remove"
-              title="Quitar"
-              style={{ flex: 1 }}
-              onPress={() => move("quitar")}
-            />
-            <Button
-              icon="add"
-              title="Agregar"
-              style={{ flex: 1 }}
-              onPress={() => move("agregar")}
-            />
-          </View>
+          <Button
+            icon="checkmark-circle-outline"
+            title="Guardar stock"
+            onPress={setExactStock}
+          />
         </KeyboardDialog>
       </Modal>
     </Screen>
   );
 }
 
-function LegacyCaja({ navigation }) {
+function CajaContent({ navigation }) {
   const [summary, setSummary] = useState(null);
   const [rows, setRows] = useState([]);
   const [type, setType] = useState("");
@@ -1974,13 +2476,14 @@ function LegacyCaja({ navigation }) {
   const [countedCash, setCountedCash] = useState("");
   const [closeNotes, setCloseNotes] = useState("");
   const load = useCallback(() => {
-    Promise.all([api.get("/caja/resumen"), api.get("/caja")])
+    return Promise.all([api.get("/caja/resumen"), api.get("/caja")])
       .then(([a, b]) => {
         setSummary(a.data.data);
         setRows(b.data.data);
       })
       .catch((error) => Alert.alert("Error", message(error)));
   }, []);
+  const refresh = usePullRefresh(load);
   useFocusEffect(
     useCallback(() => {
       load();
@@ -1991,7 +2494,9 @@ function LegacyCaja({ navigation }) {
       rows
         .filter((item) => !type || item.tipo === type)
         .filter((item) =>
-          item.concepto.toLowerCase().includes(search.toLowerCase()),
+          `${item.concepto || ""} ${item.contraparte || ""}`
+            .toLowerCase()
+            .includes(search.toLowerCase()),
         )
         .sort((a, b) =>
           order === "desc"
@@ -2060,6 +2565,7 @@ function LegacyCaja({ navigation }) {
   return (
     <Screen>
       <FlatList
+        {...refresh}
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode="on-drag"
         contentContainerStyle={s.page}
@@ -2137,9 +2643,14 @@ function LegacyCaja({ navigation }) {
             <View style={s.spaceBetween}>
               <View style={{ flex: 1 }}>
                 <Text style={s.cardTitle}>{item.concepto}</Text>
+                {item.contraparte ? (
+                  <Text style={s.meta}>
+                    {item.origen === "compra" ? "Proveedor" : "Cliente"}:{" "}
+                    {item.contraparte}
+                  </Text>
+                ) : null}
                 <Text style={s.meta}>
-                  {String(item.fecha_movimiento).replace("T", " ").slice(0, 16)}{" "}
-                  · {item.origen}
+                  {localDateTime(item.fecha_movimiento)} · {item.origen}
                 </Text>
                 <Text style={s.meta}>
                   Método: {item.metodo_pago || "efectivo"}
@@ -2301,7 +2812,7 @@ function LegacyNuevoPedido({ navigation, route }) {
   const [productSearch, setProductSearch] = useState("");
   const [client, setClient] = useState(null);
   const [quantities, setQuantities] = useState({});
-  const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
+  const [date, setDate] = useState(localDate());
   const [paid, setPaid] = useState(false);
   const [state, setState] = useState("pendiente");
   const [busy, setBusy] = useState(false);
@@ -2594,7 +3105,7 @@ function LegacyNuevoPedido({ navigation, route }) {
 export function Caja(props) {
   return (
     <View style={{ flex: 1 }}>
-      <LegacyCaja {...props} />
+      <CajaContent {...props} />
       <Pressable
         style={s.reportFab}
         onPress={() => props.navigation.navigate("Informes")}
@@ -2610,11 +3121,14 @@ export function NuevoPedido({ navigation, route }) {
   const orderId = route?.params?.idPedido,
     [clients, setClients] = useState([]),
     [products, setProducts] = useState([]),
+    [categories, setCategories] = useState([]),
     [clientSearch, setClientSearch] = useState(""),
     [productSearch, setProductSearch] = useState(""),
+    [productCategory, setProductCategory] = useState("todas"),
+    [categoryOpen, setCategoryOpen] = useState(false),
     [client, setClient] = useState(null),
     [quantities, setQuantities] = useState({}),
-    [date, setDate] = useState(new Date().toISOString().slice(0, 10)),
+    [date, setDate] = useState(localDate()),
     [paid, setPaid] = useState(false),
     [paymentMethod, setPaymentMethod] = useState("efectivo"),
     [state, setState] = useState("pendiente"),
@@ -2633,12 +3147,14 @@ export function NuevoPedido({ navigation, route }) {
     const requests = [
       api.get("/clientes", { params: { limit: 100 } }),
       api.get("/productos", { params: { limit: 100 } }),
+      api.get("/categorias-productos"),
     ];
     if (orderId) requests.push(api.get(`/pedidos/${orderId}`));
     Promise.all(requests)
-      .then(([a, b, order]) => {
+      .then(([a, b, categoryResponse, order]) => {
         setClients(a.data.data);
         setProducts(b.data.data);
+        setCategories(categoryResponse.data.data || []);
         if (order) {
           const v = order.data.data;
           setClient(v.id_cliente);
@@ -2660,11 +3176,18 @@ export function NuevoPedido({ navigation, route }) {
   const filteredClients = clients.filter((i) =>
       i.nombre.toLowerCase().includes(clientSearch.toLowerCase()),
     ),
-    filteredProducts = products.filter((i) =>
-      i.nombre.toLowerCase().includes(productSearch.toLowerCase()),
-    ),
+    filteredProducts = products
+      .filter(
+        (i) => productCategory === "todas" || i.categoria === productCategory,
+      )
+      .filter((i) =>
+        i.nombre.toLowerCase().includes(productSearch.toLowerCase()),
+      ),
     clientPages = usePagination(filteredClients, clientSearch),
-    productPages = usePagination(filteredProducts, productSearch),
+    productPages = usePagination(
+      filteredProducts,
+      `${productSearch}-${productCategory}`,
+    ),
     subtotal = products.reduce(
       (sum, i) =>
         sum + Number(i.precio_venta) * Number(quantities[i.id_producto] || 0),
@@ -2754,22 +3277,29 @@ export function NuevoPedido({ navigation, route }) {
         value={clientSearch}
         onChangeText={setClientSearch}
       />
-      {clientPages.visible.map((i) => (
-        <Pressable
-          key={i.id_cliente}
-          onPress={() => setClient(i.id_cliente)}
-          style={[s.selectRow, client === i.id_cliente && s.selectRowActive]}
-        >
-          <Text style={s.selectText}>{i.nombre}</Text>
-          {client === i.id_cliente ? (
-            <Ionicons
-              name="checkmark-circle"
-              size={22}
-              color={colors.primary}
-            />
-          ) : null}
-        </Pressable>
-      ))}
+      <View style={s.clientGrid}>
+        {clientPages.visible.map((i) => (
+          <Pressable
+            key={i.id_cliente}
+            onPress={() => setClient(i.id_cliente)}
+            style={[
+              s.clientGridItem,
+              client === i.id_cliente && s.selectRowActive,
+            ]}
+          >
+            <Text style={s.selectText} numberOfLines={1}>
+              {i.nombre}
+            </Text>
+            {client === i.id_cliente ? (
+              <Ionicons
+                name="checkmark-circle"
+                size={20}
+                color={colors.primary}
+              />
+            ) : null}
+          </Pressable>
+        ))}
+      </View>
       <Pagination {...clientPages} onChange={clientPages.setPage} />
       <Text style={s.label}>2. Agregá productos</Text>
       <Input
@@ -2778,6 +3308,18 @@ export function NuevoPedido({ navigation, route }) {
         value={productSearch}
         onChangeText={setProductSearch}
       />
+      <Pressable
+        style={s.categoryDropdown}
+        onPress={() => setCategoryOpen(true)}
+      >
+        <View>
+          <Text style={s.meta}>Categoría</Text>
+          <Text style={s.cardTitle}>
+            {productCategory === "todas" ? "Todas" : productCategory}
+          </Text>
+        </View>
+        <Ionicons name="chevron-down" size={21} color={colors.primaryDark} />
+      </Pressable>
       {productPages.visible.map((i) => (
         <View key={i.id_producto} style={s.productRow}>
           <View style={{ flex: 1 }}>
@@ -2862,6 +3404,45 @@ export function NuevoPedido({ navigation, route }) {
         onPress={save}
       />
       <Modal
+        visible={categoryOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setCategoryOpen(false)}
+      >
+        <KeyboardDialog>
+          <Header
+            title="Filtrar productos"
+            action={
+              <IconButton icon="close" onPress={() => setCategoryOpen(false)} />
+            }
+          />
+          {[{ id_categoria: 0, nombre: "todas" }, ...categories].map((item) => (
+            <Pressable
+              key={item.id_categoria}
+              style={[
+                s.selectRow,
+                productCategory === item.nombre && s.selectRowActive,
+              ]}
+              onPress={() => {
+                setProductCategory(item.nombre);
+                setCategoryOpen(false);
+              }}
+            >
+              <Text style={s.selectText}>
+                {item.nombre === "todas" ? "Todas" : item.nombre}
+              </Text>
+              {productCategory === item.nombre ? (
+                <Ionicons
+                  name="checkmark-circle"
+                  size={21}
+                  color={colors.primary}
+                />
+              ) : null}
+            </Pressable>
+          ))}
+        </KeyboardDialog>
+      </Modal>
+      <Modal
         visible={clientOpen}
         transparent
         animationType="fade"
@@ -2928,7 +3509,7 @@ function LegacyNuevaCompra({ navigation }) {
       setBusy(true);
       await api.post("/compras", {
         proveedor: provider,
-        fecha_compra: new Date().toISOString().slice(0, 10),
+        fecha_compra: localDate(),
         detalles: supplies
           .filter((item) => Number(quantities[item.id_insumo]) > 0)
           .map((item) => ({
@@ -3011,7 +3592,7 @@ export function NuevaCompra({ navigation }) {
     [search, setSearch] = useState(""),
     [quantities, setQuantities] = useState({}),
     [prices, setPrices] = useState({}),
-    [date, setDate] = useState(new Date().toISOString().slice(0, 10)),
+    [date, setDate] = useState(localDate()),
     [paymentMethod, setPaymentMethod] = useState("efectivo"),
     [discountType, setDiscountType] = useState("porcentaje"),
     [discountValue, setDiscountValue] = useState(""),
@@ -3020,7 +3601,19 @@ export function NuevaCompra({ navigation }) {
     [ticketImage, setTicketImage] = useState(null),
     [ticket, setTicket] = useState(null),
     [priorityIds, setPriorityIds] = useState([]),
-    [ticketOpen, setTicketOpen] = useState(false);
+    [ticketOpen, setTicketOpen] = useState(false),
+    [relationSearch, setRelationSearch] = useState({}),
+    [supplyOpen, setSupplyOpen] = useState(false),
+    [supplyReturnToTicket, setSupplyReturnToTicket] = useState(false),
+    [supplySaving, setSupplySaving] = useState(false),
+    [newSupply, setNewSupply] = useState({
+      nombre: "",
+      descripcion: "",
+      precio_referencia: "",
+      cantidad_referencia: "",
+      tipo_medida: "peso",
+      unidad_referencia: "g",
+    });
   const loadSupplies = useCallback(
     () =>
       api.get("/insumos", { params: { limit: 500 } }).then((r) => {
@@ -3032,6 +3625,50 @@ export function NuevaCompra({ navigation }) {
   useEffect(() => {
     loadSupplies();
   }, [loadSupplies]);
+  const createSupply = async () => {
+    try {
+      setSupplySaving(true);
+      const payload = {
+        ...newSupply,
+        precio_referencia: Number(newSupply.precio_referencia || 0),
+        cantidad_referencia: Number(newSupply.cantidad_referencia || 0),
+        fecha_precio: localDate(),
+      };
+      const response = await api.post("/insumos", payload);
+      const created = {
+        ...payload,
+        id_insumo: response.data.data.id_insumo,
+      };
+      setSupplies((current) => [created, ...current]);
+      setPriorityIds((current) => [
+        created.id_insumo,
+        ...current.filter((id) => id !== created.id_insumo),
+      ]);
+      setPrices((current) => ({
+        ...current,
+        [created.id_insumo]: String(created.precio_referencia),
+      }));
+      setNewSupply({
+        nombre: "",
+        descripcion: "",
+        precio_referencia: "",
+        cantidad_referencia: "",
+        tipo_medida: "peso",
+        unidad_referencia: "g",
+      });
+      setSupplyOpen(false);
+      if (supplyReturnToTicket) setTicketOpen(true);
+      setSupplyReturnToTicket(false);
+      Alert.alert(
+        "Insumo agregado",
+        "Ya aparece primero en el borrador de la compra.",
+      );
+    } catch (error) {
+      Alert.alert("No se pudo agregar el insumo", message(error));
+    } finally {
+      setSupplySaving(false);
+    }
+  };
   const orderedSupplies = useMemo(() => {
       const priority = new Map(
         priorityIds.map((id, index) => [Number(id), index]),
@@ -3180,7 +3817,7 @@ export function NuevaCompra({ navigation }) {
             cantidad_referencia: 1,
             unidad_referencia: "unidad",
             tipo_medida: "unidad",
-            fecha_precio: ticket.fecha || new Date().toISOString().slice(0, 10),
+            fecha_precio: ticket.fecha || localDate(),
           });
           id = created.data.data.id_insumo;
           nextSupplies.push({
@@ -3282,6 +3919,15 @@ export function NuevaCompra({ navigation }) {
       />
       <Text style={s.label}>Fecha de compra</Text>
       <DateField value={date} onChange={setDate} />
+      <Button
+        secondary
+        icon="add-circle-outline"
+        title="Agregar un insumo nuevo"
+        onPress={() => {
+          setSupplyReturnToTicket(false);
+          setSupplyOpen(true);
+        }}
+      />
       <Input
         icon="search-outline"
         placeholder="Buscar insumo"
@@ -3353,7 +3999,16 @@ export function NuevaCompra({ navigation }) {
         onRequestClose={() => setTicketOpen(false)}
       >
         <Screen>
-          <ScrollView contentContainerStyle={s.page}>
+          <ScrollView
+            style={{ flex: 1 }}
+            contentContainerStyle={s.page}
+            keyboardShouldPersistTaps="handled"
+            keyboardDismissMode={
+              Platform.OS === "ios" ? "interactive" : "on-drag"
+            }
+            automaticallyAdjustKeyboardInsets
+            contentInsetAdjustmentBehavior="automatic"
+          >
             <Header
               title="Revisar ticket"
               subtitle={`Confianza aproximada: ${Math.round(Number(ticket?.confianza || 0) * 100)}%`}
@@ -3390,6 +4045,17 @@ export function NuevaCompra({ navigation }) {
               </View>
             ))}
             <Text style={s.sectionTitle}>Artículos detectados</Text>
+            <Button
+              secondary
+              compact
+              icon="add-circle-outline"
+              title="Crear un insumo que no existe"
+              onPress={() => {
+                setTicketOpen(false);
+                setSupplyReturnToTicket(true);
+                setSupplyOpen(true);
+              }}
+            />
             {ticketPages.visible.map((item, pageIndex) => {
               const index = (ticketPages.page - 1) * PAGE_SIZE + pageIndex;
               return (
@@ -3411,6 +4077,17 @@ export function NuevaCompra({ navigation }) {
                     {money(item.subtotal)}
                   </Text>
                   <Text style={s.label}>Relacionar con un insumo</Text>
+                  <Input
+                    icon="search-outline"
+                    placeholder="Buscar para relacionar"
+                    value={relationSearch[index] || ""}
+                    onChangeText={(value) =>
+                      setRelationSearch((current) => ({
+                        ...current,
+                        [index]: value,
+                      }))
+                    }
+                  />
                   <ScrollView
                     horizontal
                     showsHorizontalScrollIndicator={false}
@@ -3426,26 +4103,35 @@ export function NuevaCompra({ navigation }) {
                         Crear nuevo
                       </Text>
                     </Pressable>
-                    {supplies.map((supply) => (
-                      <Pressable
-                        key={supply.id_insumo}
-                        onPress={() => chooseSupply(index, supply.id_insumo)}
-                        style={[
-                          s.chip,
-                          item.id_insumo === supply.id_insumo && s.chipActive,
-                        ]}
-                      >
-                        <Text
-                          style={
-                            item.id_insumo === supply.id_insumo
-                              ? s.chipTextActive
-                              : s.chipText
-                          }
+                    {supplies
+                      .filter((supply) =>
+                        supply.nombre
+                          .toLowerCase()
+                          .includes(
+                            String(relationSearch[index] || "").toLowerCase(),
+                          ),
+                      )
+                      .slice(0, 12)
+                      .map((supply) => (
+                        <Pressable
+                          key={supply.id_insumo}
+                          onPress={() => chooseSupply(index, supply.id_insumo)}
+                          style={[
+                            s.chip,
+                            item.id_insumo === supply.id_insumo && s.chipActive,
+                          ]}
                         >
-                          {supply.nombre}
-                        </Text>
-                      </Pressable>
-                    ))}
+                          <Text
+                            style={
+                              item.id_insumo === supply.id_insumo
+                                ? s.chipTextActive
+                                : s.chipText
+                            }
+                          >
+                            {supply.nombre}
+                          </Text>
+                        </Pressable>
+                      ))}
                   </ScrollView>
                   {!item.id_insumo ? (
                     <Text style={s.stockWarning}>
@@ -3469,6 +4155,123 @@ export function NuevaCompra({ navigation }) {
             />
           </ScrollView>
         </Screen>
+      </Modal>
+      <Modal
+        visible={supplyOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => {
+          setSupplyOpen(false);
+          if (supplyReturnToTicket) setTicketOpen(true);
+          setSupplyReturnToTicket(false);
+        }}
+      >
+        <KeyboardDialog>
+          <Header
+            title="Agregar insumo"
+            subtitle="La compra actual no se pierde"
+            action={
+              <IconButton
+                icon="close"
+                onPress={() => {
+                  setSupplyOpen(false);
+                  if (supplyReturnToTicket) setTicketOpen(true);
+                  setSupplyReturnToTicket(false);
+                }}
+              />
+            }
+          />
+          <Input
+            placeholder="Nombre"
+            value={newSupply.nombre}
+            onChangeText={(value) =>
+              setNewSupply((current) => ({ ...current, nombre: value }))
+            }
+          />
+          <Input
+            placeholder="Descripción (opcional)"
+            value={newSupply.descripcion}
+            onChangeText={(value) =>
+              setNewSupply((current) => ({ ...current, descripcion: value }))
+            }
+          />
+          <Input
+            placeholder="Precio de referencia"
+            keyboardType="decimal-pad"
+            value={newSupply.precio_referencia}
+            onChangeText={(value) =>
+              setNewSupply((current) => ({
+                ...current,
+                precio_referencia: value.replace(",", "."),
+              }))
+            }
+          />
+          <Input
+            placeholder={
+              newSupply.tipo_medida === "peso"
+                ? "Cantidad de referencia en gramos"
+                : "Cantidad de referencia"
+            }
+            keyboardType="decimal-pad"
+            value={newSupply.cantidad_referencia}
+            onChangeText={(value) =>
+              setNewSupply((current) => ({
+                ...current,
+                cantidad_referencia: value.replace(",", "."),
+              }))
+            }
+          />
+          <Text style={s.label}>Tipo de medida</Text>
+          <View style={s.chips}>
+            {[
+              ["peso", "g", "Gramos"],
+              ["volumen", "ml", "Mililitros"],
+              ["unidad", "unidad", "Unidades"],
+            ].map(([type, unit, label]) => (
+              <Pressable
+                key={type}
+                style={[s.chip, newSupply.tipo_medida === type && s.chipActive]}
+                onPress={() =>
+                  setNewSupply((current) => ({
+                    ...current,
+                    tipo_medida: type,
+                    unidad_referencia: unit,
+                  }))
+                }
+              >
+                <Text
+                  style={
+                    newSupply.tipo_medida === type
+                      ? s.chipTextActive
+                      : s.chipText
+                  }
+                >
+                  {label}
+                </Text>
+              </Pressable>
+            ))}
+          </View>
+          <Button
+            icon="add"
+            title={supplySaving ? "Guardando…" : "Agregar al borrador"}
+            disabled={
+              supplySaving ||
+              !newSupply.nombre.trim() ||
+              !newSupply.precio_referencia ||
+              !newSupply.cantidad_referencia
+            }
+            onPress={createSupply}
+          />
+          <Button
+            secondary
+            title="Cancelar"
+            onPress={() => {
+              setSupplyOpen(false);
+              if (supplyReturnToTicket) setTicketOpen(true);
+              setSupplyReturnToTicket(false);
+            }}
+          />
+        </KeyboardDialog>
       </Modal>
     </Form>
   );
@@ -3519,7 +4322,7 @@ export function Calculadora({ navigation }) {
         ...newSupply,
         precio_referencia: Number(newSupply.precio_referencia),
         cantidad_referencia: Number(newSupply.cantidad_referencia),
-        fecha_precio: new Date().toISOString().slice(0, 10),
+        fecha_precio: localDate(),
       });
       await loadSupplies();
       setSupplyOpen(false);
@@ -3854,9 +4657,7 @@ export function CostosProductos({ navigation }) {
             <View style={s.spaceBetween}>
               <View style={{ flex: 1 }}>
                 <Text style={s.cardTitle}>{item.nombre}</Text>
-                <Text style={s.meta}>
-                  {String(item.fecha_creacion).replace("T", " ").slice(0, 16)}
-                </Text>
+                <Text style={s.meta}>{localDateTime(item.fecha_creacion)}</Text>
               </View>
               <Text style={s.totalValue}>{money(item.costo_total)}</Text>
             </View>
@@ -4884,6 +5685,233 @@ export function HistorialCliente({ route }) {
   );
 }
 
+export function PoliticaPrivacidad() {
+  const sections = [
+    [
+      "Responsable",
+      "Ciento Once es administrada por Nicolas Añibarro. Para consultas o para ejercer derechos sobre datos personales: cientoonce2026@gmail.com.",
+    ],
+    [
+      "Datos utilizados",
+      "La aplicación trata datos de cuenta y los datos comerciales que cada negocio carga: empleados, clientes, teléfonos, domicilios, ubicaciones, productos, insumos, stock, pedidos, compras, caja, costos e informes.",
+    ],
+    [
+      "Ubicación, imágenes e IA",
+      "La ubicación se usa con permiso para mapas y rutas. Las fotos seleccionadas pueden enviarse a Google Gemini para interpretar tickets o generar piezas gráficas. Las fotos temporales no se guardan después del resultado; el logo del negocio se conserva hasta reemplazarlo o eliminar la cuenta.",
+    ],
+    [
+      "Proveedores",
+      "El servicio utiliza Render, Aiven, Google Maps Platform, Google Gemini, Gmail/Google y Expo/EAS. No vende datos personales ni los utiliza para publicidad de terceros.",
+    ],
+    [
+      "Conservación y derechos",
+      "Los datos se conservan mientras la cuenta esté activa o exista una obligación legal. Podés solicitar acceso, corrección o eliminación. La eliminación definitiva está disponible en Mi perfil y mediante la página externa.",
+    ],
+  ];
+  return (
+    <Form title="Política de privacidad">
+      <Card style={{ backgroundColor: colors.primarySoft }}>
+        <Text style={s.cardTitle}>Ciento Once</Text>
+        <Text style={s.meta}>
+          Última actualización: 5 de septiembre de 2026
+        </Text>
+      </Card>
+      {sections.map(([title, text]) => (
+        <View key={title}>
+          <Text style={s.sectionTitle}>{title}</Text>
+          <Text style={s.privacyParagraph}>{text}</Text>
+        </View>
+      ))}
+      <Button
+        secondary
+        icon="open-outline"
+        title="Leer política pública completa"
+        onPress={() => Linking.openURL(PRIVACY_URL)}
+      />
+      <Button
+        secondary
+        icon="trash-outline"
+        title="Solicitud externa de eliminación"
+        onPress={() => Linking.openURL(DELETE_ACCOUNT_URL)}
+      />
+    </Form>
+  );
+}
+
+export function Perfil({ navigation }) {
+  const { session, logout } = useAuth();
+  const { theme, themes, saveTheme } = useAppTheme();
+  const [busy, setBusy] = useState(false);
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [deletePassword, setDeletePassword] = useState("");
+  const [deleteConfirmation, setDeleteConfirmation] = useState("");
+  const user = session?.usuario || {};
+
+  const chooseTheme = async (key) => {
+    if (key === theme || busy) return;
+    try {
+      setBusy(true);
+      await saveTheme(key);
+    } catch (error) {
+      Alert.alert("No se pudo cambiar la paleta", message(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Form title="Mi perfil">
+      <Card>
+        <View style={s.profileAvatar}>
+          <Text style={s.profileAvatarText}>
+            {String(user.nombre || user.email || "U")
+              .trim()
+              .charAt(0)
+              .toUpperCase()}
+          </Text>
+        </View>
+        <Text style={[s.cardTitle, { textAlign: "center" }]}>
+          {user.nombre || "Usuario"}
+        </Text>
+        <Text style={[s.meta, { textAlign: "center" }]}>{user.email}</Text>
+        <View style={s.profileDetailRow}>
+          <Text style={s.meta}>Tipo de acceso</Text>
+          <Text style={s.selectText}>{user.rol || "propietario"}</Text>
+        </View>
+      </Card>
+
+      <Header
+        title="Apariencia"
+        subtitle="La paleta se aplica a toda tu cuenta"
+      />
+      {Object.entries(themes).map(([key, item]) => (
+        <Pressable
+          key={key}
+          disabled={busy}
+          style={[s.paletteRow, theme === key && s.selectRowActive]}
+          onPress={() => chooseTheme(key)}
+        >
+          <View style={s.paletteSwatches}>
+            {item.swatches.map((color) => (
+              <View
+                key={color}
+                style={[s.paletteDot, { backgroundColor: color }]}
+              />
+            ))}
+          </View>
+          <Text style={[s.selectText, { flex: 1 }]}>{item.label}</Text>
+          {theme === key ? (
+            <Ionicons
+              name="checkmark-circle"
+              size={22}
+              color={colors.primary}
+            />
+          ) : null}
+        </Pressable>
+      ))}
+      <Text style={s.meta}>
+        Esta preferencia queda guardada para que la aplicación conserve el mismo
+        estilo cuando vuelvas a iniciar sesión.
+      </Text>
+      <Header title="Privacidad y cuenta" />
+      <Button
+        secondary
+        icon="shield-checkmark-outline"
+        title="Política de privacidad"
+        onPress={() => navigation.navigate("PoliticaPrivacidad")}
+      />
+      {!user.id_empleado ? (
+        <Button
+          danger
+          icon="trash-outline"
+          title="Eliminar mi cuenta y todos los datos"
+          onPress={() => setDeleteOpen(true)}
+        />
+      ) : null}
+      <Modal
+        visible={deleteOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setDeleteOpen(false)}
+      >
+        <KeyboardDialog>
+          <Header
+            title="Eliminar cuenta"
+            subtitle="Esta acción es permanente y no puede deshacerse"
+            action={
+              <IconButton icon="close" onPress={() => setDeleteOpen(false)} />
+            }
+          />
+          <Card style={{ backgroundColor: colors.dangerSoft }}>
+            <Text style={s.stockWarning}>
+              Se borrarán clientes, productos, pedidos, compras, caja, stock,
+              empleados, imágenes y configuraciones del negocio.
+            </Text>
+          </Card>
+          <Input
+            icon="lock-closed-outline"
+            placeholder="Contraseña actual"
+            secureTextEntry
+            value={deletePassword}
+            onChangeText={setDeletePassword}
+          />
+          <Input
+            icon="alert-circle-outline"
+            placeholder="Escribí ELIMINAR"
+            autoCapitalize="characters"
+            value={deleteConfirmation}
+            onChangeText={setDeleteConfirmation}
+          />
+          <Button
+            danger
+            icon="trash-outline"
+            title={busy ? "Eliminando…" : "Eliminar definitivamente"}
+            disabled={
+              busy ||
+              !deletePassword ||
+              deleteConfirmation.trim().toUpperCase() !== "ELIMINAR"
+            }
+            onPress={() =>
+              Alert.alert(
+                "Última confirmación",
+                "¿Eliminar definitivamente la cuenta y todos sus datos?",
+                [
+                  { text: "Cancelar", style: "cancel" },
+                  {
+                    text: "Eliminar",
+                    style: "destructive",
+                    onPress: async () => {
+                      try {
+                        setBusy(true);
+                        await api.delete("/auth/account", {
+                          data: {
+                            password: deletePassword,
+                            confirmacion: deleteConfirmation,
+                          },
+                        });
+                        setDeleteOpen(false);
+                        await logout();
+                        Alert.alert(
+                          "Cuenta eliminada",
+                          "La cuenta y sus datos fueron eliminados definitivamente.",
+                        );
+                      } catch (error) {
+                        Alert.alert("No se pudo eliminar", message(error));
+                      } finally {
+                        setBusy(false);
+                      }
+                    },
+                  },
+                ],
+              )
+            }
+          />
+        </KeyboardDialog>
+      </Modal>
+    </Form>
+  );
+}
+
 export function CentroComercial() {
   const [config, setConfig] = useState({}),
     [employees, setEmployees] = useState([]),
@@ -4915,6 +5943,42 @@ export function CentroComercial() {
       Alert.alert("Configuración guardada");
     } catch (error) {
       Alert.alert("No se pudo guardar", message(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const pickBusinessLogo = async () => {
+    try {
+      const permission =
+        await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!permission.granted)
+        return Alert.alert(
+          "Permiso necesario",
+          "Habilita el acceso a tus fotos.",
+        );
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ["images"],
+        quality: 1,
+      });
+      if (result.canceled) return;
+      setBusy(true);
+      const compressed = await ImageManipulator.manipulateAsync(
+        result.assets[0].uri,
+        [{ resize: { width: 640 } }],
+        { compress: 0.72, format: ImageManipulator.SaveFormat.JPEG },
+      );
+      const body = new FormData();
+      body.append("imagen", {
+        uri: compressed.uri,
+        name: "logo.jpg",
+        type: "image/jpeg",
+      });
+      await api.put("/configuracion-comercial/logo", body, {
+        timeout: 60000,
+      });
+      await load();
+    } catch (error) {
+      Alert.alert("No se pudo guardar la imagen", message(error));
     } finally {
       setBusy(false);
     }
@@ -4952,9 +6016,26 @@ export function CentroComercial() {
     }
   };
   return (
-    <Form title="Centro comercial">
+    <Form title="Centro comercial" onRefresh={load}>
       <Card>
         <Text style={s.cardTitle}>Identidad del negocio</Text>
+        {config.logo_base64 ? (
+          <Image
+            source={{
+              uri: `data:${config.logo_mime || "image/jpeg"};base64,${String(config.logo_base64).replace(/\s/g, "")}`,
+            }}
+            style={s.businessLogo}
+          />
+        ) : null}
+        <Button
+          secondary
+          icon="image-outline"
+          title={
+            config.tiene_logo ? "Cambiar foto o logo" : "Agregar foto o logo"
+          }
+          disabled={busy}
+          onPress={pickBusinessLogo}
+        />
         <Input
           icon="storefront-outline"
           placeholder="Nombre del negocio"
@@ -4980,6 +6061,34 @@ export function CentroComercial() {
           value={config.cuit || ""}
           onChangeText={(value) => change("cuit", value)}
         />
+        <Text style={s.label}>Paleta visual</Text>
+        {VISUAL_PALETTES.map(([key, label, swatches]) => (
+          <Pressable
+            key={key}
+            style={[
+              s.paletteRow,
+              config.paleta_visual === key && s.selectRowActive,
+            ]}
+            onPress={() => change("paleta_visual", key)}
+          >
+            <View style={s.paletteSwatches}>
+              {swatches.map((color) => (
+                <View
+                  key={color}
+                  style={[s.paletteDot, { backgroundColor: color }]}
+                />
+              ))}
+            </View>
+            <Text style={s.selectText}>{label}</Text>
+            {config.paleta_visual === key ? (
+              <Ionicons
+                name="checkmark-circle"
+                size={20}
+                color={colors.primary}
+              />
+            ) : null}
+          </Pressable>
+        ))}
         <Button
           title={busy ? "Guardando…" : "Guardar datos"}
           disabled={busy}
@@ -5099,33 +6208,322 @@ export function CentroComercial() {
   );
 }
 
+export function Flyers() {
+  const [products, setProducts] = useState([]);
+  const [selected, setSelected] = useState([]);
+  const [search, setSearch] = useState("");
+  const [title, setTitle] = useState("");
+  const [detail, setDetail] = useState("");
+  const [cta, setCta] = useState("");
+  const [designType, setDesignType] = useState("promocion");
+  const [visualStyle, setVisualStyle] = useState("sorpresa");
+  const [creativeDirection, setCreativeDirection] = useState("");
+  const [palette, setPalette] = useState("verde_crema");
+  const [photos, setPhotos] = useState([]);
+  const [result, setResult] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const load = useCallback(
+    () =>
+      api
+        .get("/productos", { params: { limit: 100 } })
+        .then((r) => setProducts(r.data.data)),
+    [],
+  );
+  useEffect(() => {
+    load();
+  }, [load]);
+  const filtered = products.filter((item) =>
+    item.nombre.toLowerCase().includes(search.toLowerCase()),
+  );
+  const pages = usePagination(filtered, search, 6);
+  const choosePhoto = async () => {
+    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!permission.granted)
+      return Alert.alert(
+        "Permiso necesario",
+        "Habilita el acceso a tus fotos.",
+      );
+    const picked = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ["images"],
+      allowsMultipleSelection: true,
+      selectionLimit: 3,
+      quality: 1,
+    });
+    if (picked.canceled) return;
+    const compressed = await Promise.all(
+      picked.assets
+        .slice(0, 3)
+        .map((asset) =>
+          ImageManipulator.manipulateAsync(
+            asset.uri,
+            [{ resize: { width: 1400 } }],
+            { compress: 0.8, format: ImageManipulator.SaveFormat.JPEG },
+          ),
+        ),
+    );
+    setPhotos(compressed.map((item) => item.uri));
+  };
+  const generate = async () => {
+    try {
+      setBusy(true);
+      const body = new FormData();
+      body.append("productos", JSON.stringify(selected));
+      body.append("titulo", title);
+      body.append("detalle", detail);
+      body.append("cta", cta);
+      body.append("tipo_diseno", designType);
+      body.append("estilo_visual", visualStyle);
+      body.append("direccion_creativa", creativeDirection);
+      body.append("paleta", palette);
+      photos.forEach((uri, index) =>
+        body.append("imagenes", {
+          uri,
+          name: `producto-${index + 1}.jpg`,
+          type: "image/jpeg",
+        }),
+      );
+      const response = await api.post("/flyers/generar", body, {
+        timeout: 180000,
+      });
+      setResult(response.data.data);
+    } catch (error) {
+      Alert.alert("No se pudo crear el flyer", message(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const share = async () => {
+    const extension = result.mime?.includes("jpeg") ? "jpg" : "png";
+    const uri = `${FileSystem.cacheDirectory}flyer-ciento-once.${extension}`;
+    await FileSystem.writeAsStringAsync(uri, result.imagen_base64, {
+      encoding: FileSystem.EncodingType.Base64,
+    });
+    await Sharing.shareAsync(uri, {
+      mimeType: result.mime || "image/png",
+      dialogTitle: "Compartir flyer",
+    });
+  };
+  return (
+    <Form title="Creador de flyers" onRefresh={load}>
+      <Card style={{ backgroundColor: colors.primarySoft }}>
+        <Text style={s.cardTitle}>Tu diseñador creativo con IA</Text>
+        <Text style={s.meta}>
+          Elige qué quieres comunicar. La IA crea una escena diferente y la app
+          coloca los textos con ortografía exacta.
+        </Text>
+      </Card>
+      <Text style={s.label}>¿Qué quieres crear?</Text>
+      <View style={s.chips}>
+        {[
+          ["promocion", "Promoción"],
+          ["menu", "Menú / precios"],
+          ["editorial", "Publicación creativa"],
+        ].map(([key, label]) => (
+          <Pressable
+            key={key}
+            style={[s.chip, designType === key && s.chipActive]}
+            onPress={() => setDesignType(key)}
+          >
+            <Text style={designType === key ? s.chipTextActive : s.chipText}>
+              {label}
+            </Text>
+          </Pressable>
+        ))}
+      </View>
+      <Text style={s.sectionTitle}>Productos que aparecerán</Text>
+      <Input
+        icon="search-outline"
+        placeholder="Buscar producto"
+        value={search}
+        onChangeText={setSearch}
+      />
+      {pages.visible.map((item) => {
+        const active = selected.includes(item.id_producto);
+        return (
+          <Pressable
+            key={item.id_producto}
+            style={[s.selectRow, active && s.selectRowActive]}
+            onPress={() =>
+              setSelected((current) =>
+                active
+                  ? current.filter((id) => id !== item.id_producto)
+                  : [...current, item.id_producto],
+              )
+            }
+          >
+            <View>
+              <Text style={s.selectText}>{item.nombre}</Text>
+              <Text style={s.meta}>{money(item.precio_venta)}</Text>
+            </View>
+            <Ionicons
+              name={active ? "checkmark-circle" : "ellipse-outline"}
+              size={22}
+              color={active ? colors.primary : colors.textSecondary}
+            />
+          </Pressable>
+        );
+      })}
+      <Pagination {...pages} onChange={pages.setPage} />
+      <Input
+        placeholder="Título principal, por ejemplo: Merienda especial"
+        value={title}
+        onChangeText={setTitle}
+      />
+      <Input
+        placeholder="Información escrita: oferta, descripción o condiciones"
+        value={detail}
+        onChangeText={setDetail}
+      />
+      <Input
+        placeholder="Llamada a la acción, por ejemplo: Reserva por WhatsApp"
+        value={cta}
+        onChangeText={setCta}
+      />
+      <Text style={s.label}>Estilo de colores</Text>
+      <View style={s.chips}>
+        {VISUAL_PALETTES.map(([key, label]) => (
+          <Pressable
+            key={key}
+            style={[s.chip, palette === key && s.chipActive]}
+            onPress={() => setPalette(key)}
+          >
+            <Text style={palette === key ? s.chipTextActive : s.chipText}>
+              {label}
+            </Text>
+          </Pressable>
+        ))}
+      </View>
+      <Text style={s.label}>Estilo visual</Text>
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        contentContainerStyle={s.categoryStrip}
+      >
+        {[
+          ["sorpresa", "Sorpréndeme"],
+          ["fotografia", "Fotografía premium"],
+          ["artesanal", "Artesanal"],
+          ["audaz", "Audaz"],
+          ["minimalista", "Minimalista"],
+          ["collage", "Collage editorial"],
+        ].map(([key, label]) => (
+          <Pressable
+            key={key}
+            style={[s.chip, visualStyle === key && s.chipActive]}
+            onPress={() => setVisualStyle(key)}
+          >
+            <Text style={visualStyle === key ? s.chipTextActive : s.chipText}>
+              {label}
+            </Text>
+          </Pressable>
+        ))}
+      </ScrollView>
+      <Input
+        placeholder="Idea o indicación creativa (opcional): ambiente, ocasión, fondo, estilo…"
+        value={creativeDirection}
+        onChangeText={setCreativeDirection}
+        multiline
+        numberOfLines={3}
+      />
+      <Button
+        secondary
+        icon="images-outline"
+        title={
+          photos.length
+            ? `Cambiar ${photos.length} foto${photos.length > 1 ? "s" : ""}`
+            : "Agregar hasta 3 fotos (opcional)"
+        }
+        onPress={choosePhoto}
+      />
+      {photos.length ? (
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={s.flyerPhotosRow}
+        >
+          {photos.map((uri, index) => (
+            <View key={uri}>
+              <Image
+                source={{ uri }}
+                style={s.flyerPhotoThumb}
+                resizeMode="cover"
+              />
+              <Pressable
+                style={s.flyerPhotoRemove}
+                onPress={() =>
+                  setPhotos((current) =>
+                    current.filter((_, itemIndex) => itemIndex !== index),
+                  )
+                }
+              >
+                <Ionicons name="close" size={17} color="#FFF" />
+              </Pressable>
+            </View>
+          ))}
+        </ScrollView>
+      ) : null}
+      <Button
+        icon="sparkles"
+        title={busy ? "Creando flyer…" : "Crear flyer"}
+        disabled={busy || !selected.length}
+        onPress={generate}
+      />
+      {result ? (
+        <Card>
+          <Image
+            source={{
+              uri: `data:${result.mime};base64,${result.imagen_base64}`,
+            }}
+            style={s.flyerResult}
+            resizeMode="contain"
+          />
+          <Button
+            icon="share-social-outline"
+            title="Guardar o compartir"
+            onPress={share}
+          />
+        </Card>
+      ) : null}
+    </Form>
+  );
+}
+
 export function Ayuda() {
   const sections = [
     {
-      title: "Clientes y ventas",
-      image: require("../../assets/ayuda-pedidos.png"),
+      title: "1. Prepara tu catálogo",
+      icon: "cube-outline",
+      action: "+ Producto / + Insumo",
       items: [
-        "Cargá o creá rápidamente un cliente desde el pedido.",
-        "Elegí productos, fecha, descuento, pago y entrega.",
-        "Crear un pedido reserva stock; cancelarlo lo devuelve. Pagado registra el ingreso en Caja.",
+        "Crea categorías y carga los productos que vendes.",
+        "Carga insumos con precio y cantidad de referencia.",
       ],
     },
     {
-      title: "Productos, insumos y stock",
-      image: require("../../assets/ayuda-stock.png"),
+      title: "2. Crea un cliente y un pedido",
+      icon: "receipt-outline",
+      action: "Nuevo pedido → Cliente → Productos",
       items: [
-        "Creá categorías propias y registrá productos e insumos.",
-        "Nueva compra conserva proveedor, fecha y descuento.",
-        "El stock puede quedar negativo; la app te advierte antes de confirmar.",
+        "Selecciona un cliente o créalo sin salir del pedido.",
+        "Elige productos, entrega, pago y descuento; guardar reserva el stock.",
       ],
     },
     {
-      title: "Costos, caja e informes",
-      image: require("../../assets/ayuda-informes.png"),
+      title: "3. Registra compras y controla stock",
+      icon: "cart-outline",
+      action: "Nueva compra → Ticket o carga manual",
       items: [
-        "Calculá y guardá costos de elaboración.",
-        "Registrá aportes y retiros sin mezclarlos con ventas.",
-        "Filtrá informes, consultá rankings y exportá el resultado a Excel.",
+        "Fotografía un ticket o carga insumos manualmente.",
+        "Edita el stock con − / + o escribe el valor exacto.",
+      ],
+    },
+    {
+      title: "4. Revisa caja e informes",
+      icon: "stats-chart-outline",
+      action: "Caja → Informes → Exportar Excel",
+      items: [
+        "Registra aportes, retiros y realiza el cierre diario.",
+        "Filtra ventas y compras antes de exportar el informe.",
       ],
     },
   ];
@@ -5139,12 +6537,25 @@ export function Ayuda() {
         {sections.map((section) => (
           <View key={section.title}>
             <Text style={s.sectionTitle}>{section.title}</Text>
-            <Image
-              source={section.image}
-              style={s.helpLandscape}
-              resizeMode="contain"
-            />
+            <View style={s.helpMock}>
+              <View style={s.helpMockBar} />
+              <Ionicons
+                name={section.icon}
+                size={38}
+                color={colors.primaryDark}
+              />
+              <View style={{ flex: 1 }}>
+                <View style={s.helpMockLine} />
+                <View style={[s.helpMockLine, { width: "62%" }]} />
+              </View>
+              <View style={s.helpCallout}>
+                <Text style={s.helpCalloutText}>TOCA AQUÍ</Text>
+              </View>
+            </View>
             <Card>
+              <Text style={[s.cardTitle, { color: colors.primaryDark }]}>
+                {section.action}
+              </Text>
               {section.items.map((item, index) => (
                 <View key={item} style={s.helpBullet}>
                   <View style={s.helpNumber}>
@@ -5169,516 +6580,768 @@ export function Ayuda() {
   );
 }
 
-export const s = StyleSheet.create({
-  page: { padding: 18, paddingBottom: 42 },
-  form: { padding: 20, paddingBottom: 70 },
-  header: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 12,
-    marginBottom: 20,
-  },
-  title: {
-    fontSize: 27,
-    lineHeight: 33,
-    fontWeight: "800",
-    color: colors.text,
-  },
-  subtitle: { color: colors.textSecondary, marginTop: 3, fontSize: 14 },
-  welcome: {
-    color: colors.textSecondary,
-    fontSize: 17,
-    marginTop: -12,
-    marginBottom: 26,
-  },
-  sectionTitle: {
-    fontSize: 20,
-    fontWeight: "800",
-    marginTop: 20,
-    marginBottom: 12,
-    color: colors.text,
-  },
-  cardTitle: { fontSize: 17, fontWeight: "700", color: colors.text },
-  meta: { color: colors.textSecondary, lineHeight: 21, marginTop: 3 },
-  amount: { color: colors.primaryDark, fontWeight: "800", fontSize: 16 },
-  toolbar: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 9,
-    marginBottom: 7,
-  },
-  search: { flex: 1, marginBottom: 0 },
-  spaceBetween: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    gap: 12,
-  },
-  actionRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 9,
-    marginTop: 12,
-  },
-  dashboardHero: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: colors.primary,
-    borderRadius: 24,
-    padding: 20,
-    marginBottom: 12,
-    shadowColor: "#185C37",
-    shadowOffset: { width: 0, height: 7 },
-    shadowOpacity: 0.18,
-    shadowRadius: 14,
-    elevation: 5,
-  },
-  dashboardEyebrow: {
-    color: "#DDF5E7",
-    fontSize: 11,
-    fontWeight: "800",
-    letterSpacing: 1.2,
-  },
-  dashboardHeroValue: {
-    color: "#FFF",
-    fontSize: 29,
-    fontWeight: "900",
-    marginTop: 5,
-  },
-  dashboardHeroText: { color: "#E7F6ED", fontSize: 13, marginTop: 3 },
-  dashboardHeroIcon: {
-    width: 52,
-    height: 52,
-    borderRadius: 17,
-    backgroundColor: "rgba(255,255,255,.18)",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  metricGrid: { flexDirection: "row", gap: 10, marginBottom: 12 },
-  metricCard: {
-    flex: 1,
-    minHeight: 143,
-    backgroundColor: "#FFF",
-    borderRadius: 19,
-    borderWidth: 1,
-    borderColor: colors.border,
-    padding: 14,
-  },
-  metricCardAmber: { backgroundColor: "#FFF9EC", borderColor: "#F0D9A9" },
-  metricCardDark: { backgroundColor: "#21362A", borderColor: "#21362A" },
-  metricIcon: {
-    width: 35,
-    height: 35,
-    borderRadius: 11,
-    backgroundColor: colors.primarySoft,
-    alignItems: "center",
-    justifyContent: "center",
-    marginBottom: 12,
-  },
-  metricIconAmber: { backgroundColor: "#FCEAC1" },
-  metricIconDark: { backgroundColor: "rgba(255,255,255,.13)" },
-  metricValue: { color: colors.text, fontSize: 19, fontWeight: "900" },
-  metricLabel: {
-    color: colors.text,
-    fontSize: 13,
-    fontWeight: "700",
-    marginTop: 3,
-  },
-  metricDetail: { color: colors.textSecondary, fontSize: 11, marginTop: 3 },
-  alertPanel: {
-    backgroundColor: "#FFF9EC",
-    borderColor: "#F0D39A",
-    padding: 14,
-  },
-  alertHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 10,
-    marginBottom: 8,
-  },
-  alertIcon: {
-    width: 37,
-    height: 37,
-    borderRadius: 12,
-    backgroundColor: "#FBE8BB",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  alertTitle: { color: "#6F4700", fontSize: 16, fontWeight: "800" },
-  alertRow: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    paddingVertical: 10,
-    borderTopWidth: 1,
-    borderTopColor: "#F1DDB6",
-  },
-  alertRowText: { color: "#714A08", fontWeight: "600", flex: 1 },
-  sectionHeading: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "flex-end",
-    marginTop: 4,
-  },
-  sectionHint: {
-    color: colors.textSecondary,
-    fontSize: 12,
-    marginTop: -8,
-    marginBottom: 12,
-  },
-  sectionLink: {
-    color: colors.primaryDark,
-    fontWeight: "800",
-    marginBottom: 12,
-  },
-  quickGrid: { flexDirection: "row", gap: 12 },
-  quickCard: {
-    flex: 1,
-    backgroundColor: "#FFF",
-    borderRadius: 19,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: colors.border,
-    elevation: 2,
-  },
-  quickIcon: {
-    width: 48,
-    height: 48,
-    borderRadius: 15,
-    backgroundColor: colors.primary,
-    alignItems: "center",
-    justifyContent: "center",
-    marginBottom: 13,
-  },
-  quickTitle: { fontWeight: "800", fontSize: 16 },
-  quickText: { color: colors.textSecondary, fontSize: 12, marginTop: 3 },
-  overlay: {
-    flex: 1,
-    backgroundColor: "rgba(0,0,0,.28)",
-    alignItems: "flex-end",
-  },
-  drawer: {
-    width: "82%",
-    height: "100%",
-    backgroundColor: colors.background,
-    padding: 24,
-    paddingTop: 70,
-  },
-  drawerTitle: { fontSize: 26, fontWeight: "800", marginBottom: 24 },
-  menuItem: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 13,
-    paddingVertical: 17,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.border,
-  },
-  menuText: { flex: 1, fontSize: 16, fontWeight: "650" },
-  segment: {
-    flexDirection: "row",
-    backgroundColor: colors.primarySoft,
-    borderRadius: 14,
-    padding: 4,
-    marginBottom: 12,
-  },
-  segmentButton: {
-    flex: 1,
-    alignItems: "center",
-    padding: 11,
-    borderRadius: 11,
-  },
-  segmentActive: { backgroundColor: colors.primary },
-  segmentText: { color: colors.primaryDark, fontWeight: "700" },
-  segmentTextActive: { color: "#FFF" },
-  label: {
-    fontWeight: "800",
-    fontSize: 16,
-    color: colors.text,
-    marginTop: 13,
-    marginBottom: 10,
-  },
-  chips: { flexDirection: "row", gap: 8, marginBottom: 14, flexWrap: "wrap" },
-  filterRow: {
-    flexDirection: "row",
-    gap: 7,
-    marginBottom: 13,
-    flexWrap: "wrap",
-  },
-  chip: {
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    borderRadius: 12,
-    backgroundColor: colors.primarySoft,
-  },
-  chipActive: { backgroundColor: colors.primary },
-  chipText: {
-    color: colors.primaryDark,
-    fontWeight: "700",
-    textTransform: "capitalize",
-  },
-  chipTextActive: {
-    color: "#FFF",
-    fontWeight: "700",
-    textTransform: "capitalize",
-  },
-  pill: {
-    alignSelf: "flex-start",
-    backgroundColor: "#EFEFEF",
-    borderRadius: 20,
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    marginTop: 9,
-  },
-  pillActive: { backgroundColor: colors.primarySoft },
-  pillText: {
-    color: colors.textSecondary,
-    fontWeight: "700",
-    textTransform: "capitalize",
-  },
-  pillTextActive: { color: colors.primaryDark },
-  deliveryButton: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    backgroundColor: "#EEEEEE",
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    borderRadius: 12,
-    marginTop: 12,
-  },
-  deliveryActive: { backgroundColor: colors.primary },
-  deliveryText: { color: colors.textSecondary, fontWeight: "700" },
-  switchWrap: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 5,
-    marginTop: 9,
-  },
-  stockBadge: {
-    backgroundColor: colors.primarySoft,
-    borderRadius: 14,
-    paddingHorizontal: 15,
-    paddingVertical: 8,
-    alignItems: "center",
-  },
-  stockNumber: { fontSize: 22, fontWeight: "800", color: colors.primaryDark },
-  stockLabel: { fontSize: 10, color: colors.textSecondary },
-  modalCenter: {
-    flex: 1,
-    backgroundColor: "rgba(0,0,0,.3)",
-    justifyContent: "center",
-    padding: 20,
-  },
-  modalKeyboardContent: { flexGrow: 1, justifyContent: "center", padding: 18 },
-  dialog: { backgroundColor: colors.background, borderRadius: 22, padding: 20 },
-  balanceCard: {
-    backgroundColor: "#111",
-    borderRadius: 22,
-    padding: 22,
-    marginBottom: 16,
-  },
-  balanceLabel: { color: "#BBB", fontSize: 14 },
-  balanceValue: {
-    color: "#FFF",
-    fontSize: 32,
-    fontWeight: "800",
-    marginVertical: 7,
-  },
-  balanceDetails: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    borderTopWidth: 1,
-    borderTopColor: "#333",
-    paddingTop: 15,
-    marginTop: 8,
-  },
-  balanceSmall: { color: "#AAA", fontSize: 12 },
-  income: { color: colors.primary, fontWeight: "800" },
-  expense: { color: "#E46B62", fontWeight: "800" },
-  movementAmount: { fontSize: 15, fontWeight: "800" },
-  selectRow: {
-    backgroundColor: "#FFF",
-    borderWidth: 1,
-    borderColor: colors.border,
-    borderRadius: 13,
-    padding: 14,
-    flexDirection: "row",
-    justifyContent: "space-between",
-    marginBottom: 7,
-  },
-  selectRowActive: {
-    borderColor: colors.primary,
-    backgroundColor: colors.primarySoft,
-  },
-  selectText: { fontWeight: "650" },
-  productRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 10,
-    paddingVertical: 13,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.border,
-  },
-  counter: { flexDirection: "row", alignItems: "center", gap: 10 },
-  counterText: {
-    width: 24,
-    textAlign: "center",
-    fontWeight: "800",
-    fontSize: 17,
-  },
-  optionRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    backgroundColor: "#FFF",
-    padding: 15,
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: colors.border,
-    marginBottom: 14,
-  },
-  totalBar: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    backgroundColor: colors.primarySoft,
-    padding: 17,
-    borderRadius: 15,
-    marginVertical: 14,
-  },
-  totalLabel: { fontWeight: "700", color: colors.primaryDark },
-  totalValue: { fontSize: 21, fontWeight: "800", color: colors.primaryDark },
-  twoColumns: { flexDirection: "row", gap: 8, marginTop: 11 },
-  helpImage: {
-    width: "100%",
-    aspectRatio: 2 / 3,
-    borderRadius: 22,
-    marginBottom: 18,
-    backgroundColor: colors.primarySoft,
-  },
-  helpLandscape: {
-    width: "100%",
-    aspectRatio: 16 / 9,
-    borderRadius: 18,
-    marginBottom: 12,
-    backgroundColor: colors.primarySoft,
-  },
-  helpStep: { flexDirection: "row", gap: 13, alignItems: "center" },
-  helpBullet: {
-    flexDirection: "row",
-    gap: 10,
-    alignItems: "center",
-    marginBottom: 12,
-  },
-  helpNumber: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: colors.primary,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  helpNumberText: { color: "#FFF", fontWeight: "800", fontSize: 14 },
-  dateRow: {
-    flexDirection: "row",
-    gap: 8,
-    alignItems: "center",
-    marginBottom: 12,
-  },
-  discountToggle: {
-    width: 58,
-    minHeight: 49,
-    borderRadius: 14,
-    backgroundColor: colors.primary,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  discountToggleText: { color: "#FFF", fontSize: 21, fontWeight: "800" },
-  categoryStrip: { gap: 8, paddingBottom: 10 },
-  stockWarning: { color: "#C65B3C", fontWeight: "700" },
-  geoReady: {
-    color: colors.primaryDark,
-    fontWeight: "700",
-    fontSize: 12,
-    marginTop: 7,
-  },
-  reportFab: {
-    position: "absolute",
-    right: 18,
-    bottom: 82,
-    backgroundColor: colors.primary,
-    borderRadius: 24,
-    paddingHorizontal: 17,
-    paddingVertical: 12,
-    flexDirection: "row",
-    gap: 7,
-    alignItems: "center",
-    elevation: 5,
-  },
-  reportFabText: { color: "#FFF", fontWeight: "800" },
-  chartWrap: { flexDirection: "row", alignItems: "center", gap: 14 },
-  legendRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 7,
-    marginBottom: 8,
-  },
-  legendDot: { width: 12, height: 12, borderRadius: 6 },
-  routeOrder: { padding: 14 },
-  routeOrderSelected: {
-    borderColor: colors.primary,
-    borderWidth: 2,
-    backgroundColor: colors.primarySoft,
-  },
-  routeOrderDisabled: { opacity: 0.55 },
-  routeMap: { height: 360, borderRadius: 20, marginVertical: 15 },
-  routeSummary: { backgroundColor: "#111", marginTop: 16 },
-  routeSummaryTitle: { color: "#C7EFD7", fontWeight: "800", fontSize: 16 },
-  routeSummaryValue: {
-    color: "#FFF",
-    fontSize: 25,
-    fontWeight: "800",
-    marginTop: 6,
-  },
-  routeStep: { flexDirection: "row", alignItems: "center", gap: 12 },
-  routeNumber: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
-    backgroundColor: colors.primary,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  routeNumberText: { color: "#FFF", fontWeight: "800", fontSize: 16 },
-  ticketCard: { backgroundColor: "#F0FAF4", borderColor: "#B9E4CA" },
-  ticketIntro: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 12,
-    marginBottom: 10,
-  },
-  ticketIcon: {
-    width: 44,
-    height: 44,
-    borderRadius: 14,
-    backgroundColor: colors.primary,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  ticketPreview: {
-    width: "100%",
-    height: 260,
-    backgroundColor: "#EFEFEF",
-    borderRadius: 18,
-    marginBottom: 14,
-  },
-  ticketWarning: {
-    flexDirection: "row",
-    alignItems: "flex-start",
-    gap: 8,
-    padding: 12,
-    borderRadius: 12,
-    backgroundColor: "#FFF1D9",
-    marginBottom: 8,
-  },
+const createScreenStyles = () =>
+  StyleSheet.create({
+    page: { padding: 18, paddingBottom: 42 },
+    form: { flexGrow: 1, padding: 20, paddingBottom: 70 },
+    centeredForm: { justifyContent: "center", paddingVertical: 34 },
+    header: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 12,
+      marginBottom: 20,
+    },
+    title: {
+      fontSize: 27,
+      lineHeight: 33,
+      fontWeight: "800",
+      color: colors.text,
+    },
+    subtitle: { color: colors.textSecondary, marginTop: 3, fontSize: 14 },
+    welcome: {
+      color: colors.textSecondary,
+      fontSize: 17,
+      marginTop: -12,
+      marginBottom: 26,
+    },
+    loginHero: { alignItems: "center", marginBottom: 22 },
+    loginMark: {
+      width: 76,
+      height: 76,
+      borderRadius: 24,
+      backgroundColor: colors.primary,
+      alignItems: "center",
+      justifyContent: "center",
+      marginBottom: 18,
+      shadowColor: colors.primaryDark,
+      shadowOffset: { width: 0, height: 8 },
+      shadowOpacity: 0.24,
+      shadowRadius: 13,
+      elevation: 6,
+      transform: [{ rotate: "-3deg" }],
+    },
+    loginEyebrow: {
+      color: colors.primaryDark,
+      fontSize: 11,
+      fontWeight: "900",
+      letterSpacing: 1.7,
+      marginBottom: 7,
+    },
+    loginTitle: {
+      color: colors.text,
+      fontSize: 36,
+      lineHeight: 42,
+      fontWeight: "900",
+      letterSpacing: -1,
+    },
+    loginSubtitle: {
+      color: colors.textSecondary,
+      fontSize: 15,
+      lineHeight: 21,
+      textAlign: "center",
+      maxWidth: 310,
+      marginTop: 7,
+    },
+    loginCard: {
+      width: "100%",
+      maxWidth: 460,
+      alignSelf: "center",
+      padding: 21,
+      borderRadius: 24,
+      shadowOpacity: 0.1,
+      shadowRadius: 16,
+      elevation: 4,
+    },
+    loginCardTitle: {
+      color: colors.text,
+      fontSize: 21,
+      fontWeight: "900",
+      textAlign: "center",
+    },
+    loginCardSubtitle: {
+      color: colors.textSecondary,
+      textAlign: "center",
+      marginTop: 3,
+      marginBottom: 18,
+    },
+    loginTextAction: { alignSelf: "center", padding: 10, marginTop: 2 },
+    loginTextActionLabel: { color: colors.primaryDark, fontWeight: "800" },
+    loginPrivacyLink: {
+      color: colors.textSecondary,
+      fontSize: 13,
+      fontWeight: "700",
+      textDecorationLine: "underline",
+    },
+    loginCreateRow: {
+      flexDirection: "row",
+      justifyContent: "center",
+      alignItems: "center",
+      flexWrap: "wrap",
+      gap: 6,
+      marginTop: 10,
+    },
+    loginCreateText: { color: colors.textSecondary },
+    loginCreateLink: { color: colors.primaryDark, fontWeight: "900" },
+    loginEmployeeButton: { width: "100%", maxWidth: 460, alignSelf: "center" },
+    loginDevStatus: {
+      width: "100%",
+      maxWidth: 460,
+      alignSelf: "center",
+      alignItems: "center",
+      backgroundColor: colors.primarySoft,
+      borderRadius: 12,
+      padding: 9,
+      marginTop: 8,
+    },
+    sectionTitle: {
+      fontSize: 20,
+      fontWeight: "800",
+      marginTop: 20,
+      marginBottom: 12,
+      color: colors.text,
+    },
+    privacyParagraph: {
+      color: colors.textSecondary,
+      fontSize: 15,
+      lineHeight: 23,
+      marginBottom: 8,
+    },
+    cardTitle: { fontSize: 17, fontWeight: "700", color: colors.text },
+    meta: { color: colors.textSecondary, lineHeight: 21, marginTop: 3 },
+    amount: { color: colors.primaryDark, fontWeight: "800", fontSize: 16 },
+    toolbar: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 9,
+      marginBottom: 7,
+    },
+    search: { flex: 1, marginBottom: 0 },
+    spaceBetween: {
+      flexDirection: "row",
+      justifyContent: "space-between",
+      alignItems: "center",
+      gap: 12,
+    },
+    actionRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 9,
+      marginTop: 12,
+    },
+    dashboardHero: {
+      flexDirection: "row",
+      alignItems: "center",
+      backgroundColor: colors.primary,
+      borderRadius: 24,
+      padding: 20,
+      marginBottom: 12,
+      shadowColor: "#185C37",
+      shadowOffset: { width: 0, height: 7 },
+      shadowOpacity: 0.18,
+      shadowRadius: 14,
+      elevation: 5,
+    },
+    dashboardEyebrow: {
+      color: "#DDF5E7",
+      fontSize: 11,
+      fontWeight: "800",
+      letterSpacing: 1.2,
+    },
+    dashboardHeroValue: {
+      color: "#FFF",
+      fontSize: 29,
+      fontWeight: "900",
+      marginTop: 5,
+    },
+    dashboardHeroText: { color: "#E7F6ED", fontSize: 13, marginTop: 3 },
+    dashboardHeroIcon: {
+      width: 52,
+      height: 52,
+      borderRadius: 17,
+      backgroundColor: "rgba(255,255,255,.18)",
+      alignItems: "center",
+      justifyContent: "center",
+    },
+    metricGrid: { flexDirection: "row", gap: 10, marginBottom: 12 },
+    metricCard: {
+      flex: 1,
+      minHeight: 143,
+      backgroundColor: "#FFF",
+      borderRadius: 19,
+      borderWidth: 1,
+      borderColor: colors.border,
+      padding: 14,
+    },
+    metricCardAmber: { backgroundColor: "#FFF9EC", borderColor: "#F0D9A9" },
+    metricCardDark: { backgroundColor: "#21362A", borderColor: "#21362A" },
+    metricIcon: {
+      width: 35,
+      height: 35,
+      borderRadius: 11,
+      backgroundColor: colors.primarySoft,
+      alignItems: "center",
+      justifyContent: "center",
+      marginBottom: 12,
+    },
+    metricIconAmber: { backgroundColor: "#FCEAC1" },
+    metricIconDark: { backgroundColor: "rgba(255,255,255,.13)" },
+    metricValue: { color: colors.text, fontSize: 19, fontWeight: "900" },
+    metricLabel: {
+      color: colors.text,
+      fontSize: 13,
+      fontWeight: "700",
+      marginTop: 3,
+    },
+    metricDetail: { color: colors.textSecondary, fontSize: 11, marginTop: 3 },
+    alertPanel: {
+      backgroundColor: "#FFF9EC",
+      borderColor: "#F0D39A",
+      padding: 14,
+    },
+    alertHeader: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 10,
+      marginBottom: 8,
+    },
+    alertIcon: {
+      width: 37,
+      height: 37,
+      borderRadius: 12,
+      backgroundColor: "#FBE8BB",
+      alignItems: "center",
+      justifyContent: "center",
+    },
+    alertTitle: { color: "#6F4700", fontSize: 16, fontWeight: "800" },
+    alertRow: {
+      flexDirection: "row",
+      justifyContent: "space-between",
+      alignItems: "center",
+      paddingVertical: 10,
+      borderTopWidth: 1,
+      borderTopColor: "#F1DDB6",
+    },
+    alertRowText: { color: "#714A08", fontWeight: "600", flex: 1 },
+    sectionHeading: {
+      flexDirection: "row",
+      justifyContent: "space-between",
+      alignItems: "flex-end",
+      marginTop: 4,
+    },
+    sectionHint: {
+      color: colors.textSecondary,
+      fontSize: 12,
+      marginTop: -8,
+      marginBottom: 12,
+    },
+    sectionLink: {
+      color: colors.primaryDark,
+      fontWeight: "800",
+      marginBottom: 12,
+    },
+    quickGrid: { flexDirection: "row", gap: 12 },
+    quickCard: {
+      flex: 1,
+      backgroundColor: "#FFF",
+      borderRadius: 19,
+      padding: 16,
+      borderWidth: 1,
+      borderColor: colors.border,
+      elevation: 2,
+    },
+    quickIcon: {
+      width: 48,
+      height: 48,
+      borderRadius: 15,
+      backgroundColor: colors.primary,
+      alignItems: "center",
+      justifyContent: "center",
+      marginBottom: 13,
+    },
+    quickTitle: { fontWeight: "800", fontSize: 16 },
+    quickText: { color: colors.textSecondary, fontSize: 12, marginTop: 3 },
+    overlay: {
+      flex: 1,
+      backgroundColor: "rgba(0,0,0,.28)",
+      alignItems: "flex-end",
+    },
+    drawer: {
+      width: "82%",
+      height: "100%",
+      backgroundColor: colors.background,
+      padding: 24,
+      paddingTop: 70,
+    },
+    drawerTitle: { fontSize: 26, fontWeight: "800", marginBottom: 24 },
+    menuItem: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 13,
+      paddingVertical: 17,
+      borderBottomWidth: 1,
+      borderBottomColor: colors.border,
+    },
+    menuText: { flex: 1, fontSize: 16, fontWeight: "650" },
+    segment: {
+      flexDirection: "row",
+      backgroundColor: colors.primarySoft,
+      borderRadius: 14,
+      padding: 4,
+      marginBottom: 12,
+    },
+    segmentButton: {
+      flex: 1,
+      alignItems: "center",
+      padding: 11,
+      borderRadius: 11,
+    },
+    segmentActive: { backgroundColor: colors.primary },
+    segmentText: { color: colors.primaryDark, fontWeight: "700" },
+    segmentTextActive: { color: "#FFF" },
+    label: {
+      fontWeight: "800",
+      fontSize: 16,
+      color: colors.text,
+      marginTop: 13,
+      marginBottom: 10,
+    },
+    chips: { flexDirection: "row", gap: 8, marginBottom: 14, flexWrap: "wrap" },
+    filterRow: {
+      flexDirection: "row",
+      gap: 7,
+      marginBottom: 13,
+      flexWrap: "wrap",
+    },
+    filterLabel: {
+      color: colors.textSecondary,
+      fontSize: 12,
+      fontWeight: "800",
+      letterSpacing: 0.8,
+      textTransform: "uppercase",
+      marginBottom: 7,
+    },
+    chip: {
+      paddingHorizontal: 14,
+      paddingVertical: 10,
+      borderRadius: 12,
+      backgroundColor: colors.primarySoft,
+    },
+    chipActive: { backgroundColor: colors.primary },
+    chipText: {
+      color: colors.primaryDark,
+      fontWeight: "700",
+      textTransform: "capitalize",
+    },
+    chipTextActive: {
+      color: "#FFF",
+      fontWeight: "700",
+      textTransform: "capitalize",
+    },
+    pill: {
+      alignSelf: "flex-start",
+      backgroundColor: "#EFEFEF",
+      borderRadius: 20,
+      paddingHorizontal: 10,
+      paddingVertical: 5,
+      marginTop: 9,
+    },
+    pillActive: { backgroundColor: colors.primarySoft },
+    pillText: {
+      color: colors.textSecondary,
+      fontWeight: "700",
+      textTransform: "capitalize",
+    },
+    pillTextActive: { color: colors.primaryDark },
+    deliveryButton: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 6,
+      backgroundColor: "#EEEEEE",
+      paddingHorizontal: 12,
+      paddingVertical: 10,
+      borderRadius: 12,
+      marginTop: 12,
+    },
+    deliveryActive: { backgroundColor: colors.primary },
+    deliveryText: { color: colors.textSecondary, fontWeight: "700" },
+    switchWrap: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 5,
+      marginTop: 9,
+    },
+    stockBadge: {
+      backgroundColor: colors.primarySoft,
+      borderRadius: 14,
+      paddingHorizontal: 15,
+      paddingVertical: 8,
+      alignItems: "center",
+    },
+    stockNumber: { fontSize: 22, fontWeight: "800", color: colors.primaryDark },
+    stockLabel: { fontSize: 10, color: colors.textSecondary },
+    modalCenter: {
+      flex: 1,
+      backgroundColor: "rgba(0,0,0,.3)",
+      justifyContent: "center",
+      padding: 20,
+    },
+    modalKeyboardContent: {
+      flexGrow: 1,
+      justifyContent: "center",
+      padding: 18,
+    },
+    dialog: {
+      backgroundColor: colors.background,
+      borderRadius: 22,
+      padding: 20,
+    },
+    balanceCard: {
+      backgroundColor: "#111",
+      borderRadius: 22,
+      padding: 22,
+      marginBottom: 16,
+    },
+    balanceLabel: { color: "#BBB", fontSize: 14 },
+    balanceValue: {
+      color: "#FFF",
+      fontSize: 32,
+      fontWeight: "800",
+      marginVertical: 7,
+    },
+    balanceDetails: {
+      flexDirection: "row",
+      justifyContent: "space-between",
+      borderTopWidth: 1,
+      borderTopColor: "#333",
+      paddingTop: 15,
+      marginTop: 8,
+    },
+    balanceSmall: { color: "#AAA", fontSize: 12 },
+    income: { color: colors.primary, fontWeight: "800" },
+    expense: { color: "#E46B62", fontWeight: "800" },
+    movementAmount: { fontSize: 15, fontWeight: "800" },
+    selectRow: {
+      backgroundColor: "#FFF",
+      borderWidth: 1,
+      borderColor: colors.border,
+      borderRadius: 13,
+      padding: 14,
+      flexDirection: "row",
+      justifyContent: "space-between",
+      marginBottom: 7,
+    },
+    selectRowActive: {
+      borderColor: colors.primary,
+      backgroundColor: colors.primarySoft,
+    },
+    selectText: { fontWeight: "650" },
+    clientGrid: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
+    clientGridItem: {
+      width: "48.5%",
+      minHeight: 52,
+      backgroundColor: "#FFF",
+      borderWidth: 1,
+      borderColor: colors.border,
+      borderRadius: 13,
+      paddingHorizontal: 12,
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+    },
+    categoryDropdown: {
+      minHeight: 58,
+      borderWidth: 1,
+      borderColor: colors.border,
+      borderRadius: 14,
+      paddingHorizontal: 14,
+      marginBottom: 12,
+      backgroundColor: "#FFF",
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+    },
+    stockStepper: { flexDirection: "row", alignItems: "center", gap: 10 },
+    businessLogo: {
+      width: 104,
+      height: 104,
+      borderRadius: 22,
+      alignSelf: "center",
+      marginVertical: 14,
+    },
+    profileAvatar: {
+      width: 82,
+      height: 82,
+      borderRadius: 41,
+      alignSelf: "center",
+      alignItems: "center",
+      justifyContent: "center",
+      backgroundColor: colors.primary,
+      marginBottom: 12,
+    },
+    profileAvatarText: { color: "#FFF", fontSize: 34, fontWeight: "900" },
+    profileDetailRow: {
+      flexDirection: "row",
+      justifyContent: "space-between",
+      alignItems: "center",
+      borderTopWidth: 1,
+      borderTopColor: colors.border,
+      marginTop: 16,
+      paddingTop: 14,
+    },
+    paletteRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 12,
+      padding: 12,
+      borderWidth: 1,
+      borderColor: colors.border,
+      borderRadius: 13,
+      marginBottom: 8,
+    },
+    paletteSwatches: { flexDirection: "row" },
+    paletteDot: {
+      width: 22,
+      height: 22,
+      borderRadius: 11,
+      marginRight: -4,
+      borderWidth: 1,
+      borderColor: "#FFF",
+    },
+    flyerPhoto: {
+      width: "100%",
+      height: 190,
+      borderRadius: 16,
+      marginVertical: 10,
+    },
+    flyerPhotosRow: { gap: 11, paddingVertical: 12, paddingRight: 8 },
+    flyerPhotoThumb: {
+      width: 132,
+      height: 132,
+      borderRadius: 18,
+      backgroundColor: colors.primarySoft,
+    },
+    flyerPhotoRemove: {
+      position: "absolute",
+      right: 7,
+      top: 7,
+      width: 28,
+      height: 28,
+      borderRadius: 14,
+      backgroundColor: "rgba(0,0,0,.72)",
+      alignItems: "center",
+      justifyContent: "center",
+    },
+    flyerResult: { width: "100%", aspectRatio: 4 / 5, borderRadius: 14 },
+    helpMock: {
+      minHeight: 120,
+      backgroundColor: "#FFF",
+      borderWidth: 1,
+      borderColor: colors.border,
+      borderRadius: 18,
+      padding: 18,
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 14,
+      overflow: "hidden",
+    },
+    helpMockBar: {
+      position: "absolute",
+      left: 0,
+      top: 0,
+      bottom: 0,
+      width: 7,
+      backgroundColor: colors.primary,
+    },
+    helpMockLine: {
+      height: 10,
+      borderRadius: 5,
+      backgroundColor: colors.primarySoft,
+      marginVertical: 5,
+      width: "88%",
+    },
+    helpCallout: {
+      position: "absolute",
+      right: 10,
+      bottom: 8,
+      borderWidth: 2,
+      borderColor: "#E46B62",
+      borderRadius: 20,
+      paddingHorizontal: 9,
+      paddingVertical: 4,
+    },
+    helpCalloutText: { color: "#C34840", fontWeight: "900", fontSize: 10 },
+    productRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 10,
+      paddingVertical: 13,
+      borderBottomWidth: 1,
+      borderBottomColor: colors.border,
+    },
+    counter: { flexDirection: "row", alignItems: "center", gap: 10 },
+    counterText: {
+      width: 24,
+      textAlign: "center",
+      fontWeight: "800",
+      fontSize: 17,
+    },
+    optionRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+      backgroundColor: "#FFF",
+      padding: 15,
+      borderRadius: 14,
+      borderWidth: 1,
+      borderColor: colors.border,
+      marginBottom: 14,
+    },
+    totalBar: {
+      flexDirection: "row",
+      justifyContent: "space-between",
+      alignItems: "center",
+      backgroundColor: colors.primarySoft,
+      padding: 17,
+      borderRadius: 15,
+      marginVertical: 14,
+    },
+    totalLabel: { fontWeight: "700", color: colors.primaryDark },
+    totalValue: { fontSize: 21, fontWeight: "800", color: colors.primaryDark },
+    twoColumns: { flexDirection: "row", gap: 8, marginTop: 11 },
+    helpImage: {
+      width: "100%",
+      aspectRatio: 2 / 3,
+      borderRadius: 22,
+      marginBottom: 18,
+      backgroundColor: colors.primarySoft,
+    },
+    helpLandscape: {
+      width: "100%",
+      aspectRatio: 16 / 9,
+      borderRadius: 18,
+      marginBottom: 12,
+      backgroundColor: colors.primarySoft,
+    },
+    helpStep: { flexDirection: "row", gap: 13, alignItems: "center" },
+    helpBullet: {
+      flexDirection: "row",
+      gap: 10,
+      alignItems: "center",
+      marginBottom: 12,
+    },
+    helpNumber: {
+      width: 32,
+      height: 32,
+      borderRadius: 16,
+      backgroundColor: colors.primary,
+      alignItems: "center",
+      justifyContent: "center",
+    },
+    helpNumberText: { color: "#FFF", fontWeight: "800", fontSize: 14 },
+    dateRow: {
+      flexDirection: "row",
+      gap: 8,
+      alignItems: "center",
+      marginBottom: 12,
+    },
+    discountToggle: {
+      width: 58,
+      minHeight: 49,
+      borderRadius: 14,
+      backgroundColor: colors.primary,
+      alignItems: "center",
+      justifyContent: "center",
+    },
+    discountToggleText: { color: "#FFF", fontSize: 21, fontWeight: "800" },
+    categoryStrip: { gap: 8, paddingBottom: 10 },
+    stockWarning: { color: "#C65B3C", fontWeight: "700" },
+    geoReady: {
+      color: colors.primaryDark,
+      fontWeight: "700",
+      fontSize: 12,
+      marginTop: 7,
+    },
+    reportFab: {
+      position: "absolute",
+      right: 18,
+      bottom: 82,
+      backgroundColor: colors.primary,
+      borderRadius: 24,
+      paddingHorizontal: 17,
+      paddingVertical: 12,
+      flexDirection: "row",
+      gap: 7,
+      alignItems: "center",
+      elevation: 5,
+    },
+    reportFabText: { color: "#FFF", fontWeight: "800" },
+    chartWrap: { flexDirection: "row", alignItems: "center", gap: 14 },
+    legendRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 7,
+      marginBottom: 8,
+    },
+    legendDot: { width: 12, height: 12, borderRadius: 6 },
+    routeOrder: { padding: 14 },
+    routeOrderSelected: {
+      borderColor: colors.primary,
+      borderWidth: 2,
+      backgroundColor: colors.primarySoft,
+    },
+    routeOrderDisabled: { opacity: 0.55 },
+    routeMap: { height: 360, borderRadius: 20, marginVertical: 15 },
+    routeSummary: { backgroundColor: "#111", marginTop: 16 },
+    routeSummaryTitle: { color: "#C7EFD7", fontWeight: "800", fontSize: 16 },
+    routeSummaryValue: {
+      color: "#FFF",
+      fontSize: 25,
+      fontWeight: "800",
+      marginTop: 6,
+    },
+    routeStep: { flexDirection: "row", alignItems: "center", gap: 12 },
+    routeNumber: {
+      width: 38,
+      height: 38,
+      borderRadius: 19,
+      backgroundColor: colors.primary,
+      alignItems: "center",
+      justifyContent: "center",
+    },
+    routeNumberText: { color: "#FFF", fontWeight: "800", fontSize: 16 },
+    ticketCard: { backgroundColor: "#F0FAF4", borderColor: "#B9E4CA" },
+    ticketIntro: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 12,
+      marginBottom: 10,
+    },
+    ticketIcon: {
+      width: 44,
+      height: 44,
+      borderRadius: 14,
+      backgroundColor: colors.primary,
+      alignItems: "center",
+      justifyContent: "center",
+    },
+    ticketPreview: {
+      width: "100%",
+      height: 260,
+      backgroundColor: "#EFEFEF",
+      borderRadius: 18,
+      marginBottom: 14,
+    },
+    ticketWarning: {
+      flexDirection: "row",
+      alignItems: "flex-start",
+      gap: 8,
+      padding: 12,
+      borderRadius: 12,
+      backgroundColor: "#FFF1D9",
+      marginBottom: 8,
+    },
+  });
+export let s = createScreenStyles();
+registerThemeListener(() => {
+  s = createScreenStyles();
 });

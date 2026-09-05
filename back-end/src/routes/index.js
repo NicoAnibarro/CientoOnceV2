@@ -8,7 +8,9 @@ const a = require("../controllers/auth.controller"),
   commercial = require("../controllers/comercial.controller"),
   g = require("../controllers/geo.controller"),
   repartos = require("../controllers/repartos.controller"),
+  flyers = require("../controllers/flyers.controller"),
   tickets = require("../controllers/tickets.controller"),
+  privacy = require("../controllers/privacy.controller"),
   { controller } = require("../controllers/crud.controller");
 const r = express.Router(),
   lim = rateLimit({
@@ -44,10 +46,26 @@ const r = express.Router(),
         ["image/jpeg", "image/png", "image/webp"].includes(file.mimetype),
       ),
   });
+const imageUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 3 * 1024 * 1024, files: 3 },
+  fileFilter: (_req, file, done) =>
+    done(null, ["image/jpeg", "image/png", "image/webp"].includes(file.mimetype)),
+});
 r.post("/auth/register", lim, a.register);
 r.post("/auth/login", lim, a.login);
+r.post("/auth/resend-verification", lim, a.resendVerification);
+r.post("/auth/verify-email", lim, a.verifyEmail);
+r.get("/auth/verify-email-link", lim, a.verifyEmailLink);
+r.post("/auth/forgot-password", lim, a.forgotPassword);
+r.post("/auth/reset-password", lim, a.resetPassword);
+r.get("/auth/reset-password-info", lim, a.resetPasswordInfo);
 r.post("/auth/employee-login", lim, a.employeeLogin);
 r.get("/auth/me", auth, a.me);
+r.get("/privacidad", privacy.policy);
+r.get("/eliminar-cuenta", privacy.deletionPage);
+r.post("/solicitar-eliminacion", lim, privacy.requestDeletion);
+r.delete("/auth/account", auth, privacy.deleteAccount);
 r.get("/geo/autocomplete", auth, geoLim, g.autocomplete);
 r.get("/geo/geocode", auth, geoLim, g.geocode);
 r.get("/geo/reverse", auth, geoLim, g.reverse);
@@ -128,6 +146,7 @@ r.post(
   permit("propietario", "administrador", "caja"),
   o.movimientoCapital,
 );
+r.get("/configuracion-comercial/paleta-app", auth, commercial.paletaApp);
 r.get(
   "/caja/cierre/resumen",
   auth,
@@ -183,6 +202,14 @@ r.put(
   permit("propietario", "administrador"),
   commercial.guardarConfig,
 );
+r.patch(
+  "/configuracion-comercial/paleta-app",
+  auth,
+  commercial.guardarPaletaApp,
+);
+r.get("/configuracion-comercial/logo", auth, flyers.logo);
+r.put("/configuracion-comercial/logo", auth, permit("propietario", "administrador"), imageUpload.single("imagen"), flyers.guardarLogo);
+r.post("/flyers/generar", auth, permit("propietario", "administrador"), ticketLim, imageUpload.array("imagenes", 3), flyers.generar);
 r.get("/costos-productos", auth, o.listarCostos);
 r.post("/costos-productos", auth, permit("propietario", "administrador"), o.guardarCosto);
 r.put("/costos-productos/:id", auth, permit("propietario", "administrador"), o.editarCosto);

@@ -37,7 +37,7 @@ async function restaurarStock(connection, userId, orderId) {
     await connection.query('UPDATE pedido_detalles SET cantidad_stock_descontada=0 WHERE id_pedido_detalle=? AND id_usuario=?', [detail.id_pedido_detalle, userId]);
     await connection.query(`INSERT INTO movimientos_stock
       (id_usuario,id_producto,tipo,cantidad,stock_anterior,stock_nuevo,origen,origen_id,motivo)
-      VALUES(?,?,'restauracion_pedido',?,?,?,'pedido',?,'Pedido volvió a pendiente o fue eliminado')`,
+      VALUES(?,?,'restauracion_pedido',?,?,?,'pedido',?,'Pedido cancelado o eliminado')`,
     [userId, detail.id_producto, detail.cantidad_stock_descontada, product.stock_actual, newStock, orderId]);
   }
 }
@@ -53,7 +53,7 @@ async function descontarStock(connection, userId, orderId) {
     await connection.query('UPDATE pedido_detalles SET cantidad_stock_descontada=? WHERE id_pedido_detalle=? AND id_usuario=?', [discount, detail.id_pedido_detalle, userId]);
     await connection.query(`INSERT INTO movimientos_stock
       (id_usuario,id_producto,tipo,cantidad,stock_anterior,stock_nuevo,origen,origen_id,motivo)
-      VALUES(?,?,'pedido',?,?,?,'pedido',?,'Pedido entregado')`,
+      VALUES(?,?,'pedido',?,?,?,'pedido',?,'Stock reservado al crear o reactivar pedido')`,
     [userId, detail.id_producto, discount, product.stock_actual, newStock, orderId]);
   }
 }
@@ -119,13 +119,16 @@ exports.editarPedido = async (req, res) => {
   const connection = await db.getConnection();
   try {
     await connection.beginTransaction(); const userId = req.usuario.id_usuario; const orderId = req.params.id;
+    if (!fechaValida(req.body.fecha_entrega)) throw Object.assign(new Error('Fecha de entrega inválida'), { status: 400 });
     const [[old]] = await connection.query('SELECT * FROM pedidos WHERE id_pedido=? AND id_usuario=? AND activo=1 FOR UPDATE', [orderId, userId]);
     if (!old) throw Object.assign(new Error('Pedido no encontrado'), { status: 404 });
     const [[client]] = await connection.query('SELECT * FROM clientes WHERE id_cliente=? AND id_usuario=? AND activo=1', [req.body.id_cliente, userId]);
     if (!client) throw Object.assign(new Error('Cliente no encontrado'), { status: 404 });
     await restaurarStock(connection, userId, orderId);
     await connection.query('DELETE FROM pedido_detalles WHERE id_pedido=? AND id_usuario=?', [orderId, userId]);
-    const subtotal = await crearDetalles(connection, userId, orderId, req.body.detalles); const state = req.body.estado || 'pendiente'; const discount = calcularDescuento(subtotal, req.body);
+    const subtotal = await crearDetalles(connection, userId, orderId, req.body.detalles); const state = req.body.estado || 'pendiente';
+    if (!['pendiente','entregado','cancelado'].includes(state)) throw Object.assign(new Error('Estado inválido'), { status: 400 });
+    const discount = calcularDescuento(subtotal, req.body);
     if (state !== 'cancelado') await descontarStock(connection, userId, orderId);
     await connection.query(`UPDATE pedidos SET id_cliente=?,cliente_nombre=?,cliente_telefono=?,cliente_direccion=?,fecha_entrega=?,estado=?,pagado=?,fecha_pago=IF(?=1,COALESCE(fecha_pago,NOW()),NULL),metodo_pago=?,pago_detalle_json=?,subtotal=?,descuento_tipo=?,descuento_valor=?,descuento_importe=?,total=?,observaciones=? WHERE id_pedido=? AND id_usuario=?`, [client.id_cliente, client.nombre, client.telefono, client.direccion, req.body.fecha_entrega, state, req.body.pagado ? 1 : 0, req.body.pagado ? 1 : 0, metodoPago(req.body.metodo_pago), req.body.pago_detalle ? JSON.stringify(req.body.pago_detalle) : null, subtotal, discount.tipo, discount.valor, discount.importe, discount.total, req.body.observaciones || null, orderId, userId]);
     await cajaPedido(connection, userId, orderId, discount.total, req.body.pagado, req.body.metodo_pago);
@@ -160,12 +163,47 @@ exports.eliminarPedido = async (req, res) => {
 };
 
 exports.stock = async (req, res) => { const [rows] = await db.query('SELECT id_producto,nombre,categoria,stock_actual FROM productos WHERE id_usuario=? AND activo=1 ORDER BY nombre', [req.usuario.id_usuario]); res.json({ ok: true, data: rows }); };
-exports.moverStock = async (req, res) => { const quantity = entero(Number(req.body.cantidad)); if (!['agregar','quitar'].includes(req.body.tipo) || !quantity || quantity < 1) return res.status(400).json({ ok: false, mensaje: 'Movimiento inválido' }); const connection = await db.getConnection(); try { await connection.beginTransaction(); const [[product]] = await connection.query('SELECT stock_actual FROM productos WHERE id_producto=? AND id_usuario=? AND activo=1 FOR UPDATE', [req.params.id, req.usuario.id_usuario]); if (!product) throw Object.assign(new Error('Producto no encontrado'), { status: 404 }); const newStock = req.body.tipo === 'agregar' ? product.stock_actual + quantity : product.stock_actual - quantity; await connection.query('UPDATE productos SET stock_actual=? WHERE id_producto=? AND id_usuario=?', [newStock, req.params.id, req.usuario.id_usuario]); await connection.query('INSERT INTO movimientos_stock(id_usuario,id_producto,tipo,cantidad,stock_anterior,stock_nuevo,origen,motivo) VALUES(?,?,?,?,?,?,?,?)', [req.usuario.id_usuario, req.params.id, req.body.tipo, quantity, product.stock_actual, newStock, 'manual', req.body.motivo || null]); await connection.commit(); res.json({ ok: true, mensaje: 'Stock actualizado', data: { stock_actual: newStock } }); } catch (error) { await connection.rollback(); throw error; } finally { connection.release(); } };
+exports.moverStock = async (req, res) => {
+  const requested = entero(Number(req.body.cantidad));
+  const exact = req.body.tipo === 'establecer';
+  if ((!exact && !['agregar', 'quitar'].includes(req.body.tipo)) || requested === null || (exact ? !Number.isInteger(requested) : requested < 1)) {
+    return res.status(400).json({ ok: false, mensaje: 'Movimiento inválido' });
+  }
+  const connection = await db.getConnection();
+  try {
+    await connection.beginTransaction();
+    const [[product]] = await connection.query(
+      'SELECT stock_actual FROM productos WHERE id_producto=? AND id_usuario=? AND activo=1 FOR UPDATE',
+      [req.params.id, req.usuario.id_usuario]
+    );
+    if (!product) throw Object.assign(new Error('Producto no encontrado'), { status: 404 });
+    const previous = Number(product.stock_actual);
+    const newStock = exact ? requested : req.body.tipo === 'agregar' ? previous + requested : previous - requested;
+    const movementType = newStock >= previous ? 'agregar' : 'quitar';
+    const movementQuantity = Math.abs(newStock - previous);
+    if (!movementQuantity) {
+      await connection.commit();
+      return res.json({ ok: true, mensaje: 'El stock ya tenía ese valor', data: { stock_actual: newStock } });
+    }
+    await connection.query('UPDATE productos SET stock_actual=? WHERE id_producto=? AND id_usuario=?', [newStock, req.params.id, req.usuario.id_usuario]);
+    await connection.query(
+      'INSERT INTO movimientos_stock(id_usuario,id_producto,tipo,cantidad,stock_anterior,stock_nuevo,origen,motivo) VALUES(?,?,?,?,?,?,?,?)',
+      [req.usuario.id_usuario, req.params.id, movementType, movementQuantity, previous, newStock, 'manual', req.body.motivo || (exact ? `Stock establecido en ${newStock}` : null)]
+    );
+    await connection.commit();
+    res.json({ ok: true, mensaje: 'Stock actualizado', data: { stock_actual: newStock } });
+  } catch (error) {
+    await connection.rollback();
+    throw error;
+  } finally {
+    connection.release();
+  }
+};
 
-exports.crearCompra = async (req, res) => { if (!fechaValida(req.body.fecha_compra)) return res.status(400).json({ ok: false, mensaje: 'Fecha de compra inválida' }); if (!Array.isArray(req.body.detalles) || !req.body.detalles.length) return res.status(400).json({ ok: false, mensaje: 'Agrega al menos un insumo' }); const connection = await db.getConnection(); try { await connection.beginTransaction(); let subtotalCompra = 0; const items = []; for (const detail of req.body.detalles) { const quantity = numero(detail.cantidad); const price = numero(detail.precio_unitario); if (!quantity || quantity <= 0 || price === null || price < 0) throw Object.assign(new Error('Detalle de compra inválido'), { status: 400 }); const [[supply]] = await connection.query('SELECT id_insumo,nombre FROM insumos WHERE id_insumo=? AND id_usuario=? AND activo=1', [detail.id_insumo, req.usuario.id_usuario]); if (!supply) throw Object.assign(new Error('Insumo no encontrado'), { status: 404 }); const subtotal = Number((quantity * price).toFixed(2)); subtotalCompra += subtotal; items.push({ ...supply, quantity, price, subtotal }); } subtotalCompra = Number(subtotalCompra.toFixed(2)); const discount = calcularDescuento(subtotalCompra, req.body),method=metodoPago(req.body.metodo_pago); const [result] = await connection.query('INSERT INTO compras(id_usuario,proveedor,fecha_compra,subtotal,descuento_tipo,descuento_valor,descuento_importe,total,metodo_pago,observaciones) VALUES(?,?,?,?,?,?,?,?,?,?)', [req.usuario.id_usuario, String(req.body.proveedor || '').trim() || 'Sin especificar', req.body.fecha_compra, subtotalCompra, discount.tipo, discount.valor, discount.importe, discount.total,method, req.body.observaciones || null]); for (const item of items) await connection.query('INSERT INTO compra_detalles(id_usuario,id_compra,id_insumo,insumo_nombre,cantidad,precio_unitario,subtotal) VALUES(?,?,?,?,?,?,?)', [req.usuario.id_usuario, result.insertId, item.id_insumo, item.nombre, item.quantity, item.price, item.subtotal]); await connection.query("INSERT INTO movimientos_caja(id_usuario,tipo,categoria,concepto,monto,metodo_pago,origen,origen_id,fecha_movimiento) VALUES(?,'egreso','compra',?,?,?,'compra',?,?)", [req.usuario.id_usuario, `Compra #${result.insertId}`, discount.total,method, result.insertId, `${req.body.fecha_compra} 12:00:00`]); await connection.commit(); res.status(201).json({ ok: true, mensaje: 'Compra registrada', data: { id_compra: result.insertId, total: discount.total } }); } catch (error) { await connection.rollback(); throw error; } finally { connection.release(); } };
+exports.crearCompra = async (req, res) => { if (!fechaValida(req.body.fecha_compra)) return res.status(400).json({ ok: false, mensaje: 'Fecha de compra inválida' }); if (!Array.isArray(req.body.detalles) || !req.body.detalles.length) return res.status(400).json({ ok: false, mensaje: 'Agrega al menos un insumo' }); const connection = await db.getConnection(); try { await connection.beginTransaction(); let subtotalCompra = 0; const items = []; for (const detail of req.body.detalles) { const quantity = numero(detail.cantidad); const price = numero(detail.precio_unitario); if (!quantity || quantity <= 0 || price === null || price < 0) throw Object.assign(new Error('Detalle de compra inválido'), { status: 400 }); const [[supply]] = await connection.query('SELECT id_insumo,nombre FROM insumos WHERE id_insumo=? AND id_usuario=? AND activo=1', [detail.id_insumo, req.usuario.id_usuario]); if (!supply) throw Object.assign(new Error('Insumo no encontrado'), { status: 404 }); const subtotal = Number((quantity * price).toFixed(2)); subtotalCompra += subtotal; items.push({ ...supply, quantity, price, subtotal }); } subtotalCompra = Number(subtotalCompra.toFixed(2)); const discount = calcularDescuento(subtotalCompra, req.body),method=metodoPago(req.body.metodo_pago); const provider = String(req.body.proveedor || '').trim() || 'Sin especificar'; const [result] = await connection.query('INSERT INTO compras(id_usuario,proveedor,fecha_compra,subtotal,descuento_tipo,descuento_valor,descuento_importe,total,metodo_pago,observaciones) VALUES(?,?,?,?,?,?,?,?,?,?)', [req.usuario.id_usuario, provider, req.body.fecha_compra, subtotalCompra, discount.tipo, discount.valor, discount.importe, discount.total,method, req.body.observaciones || null]); for (const item of items) await connection.query('INSERT INTO compra_detalles(id_usuario,id_compra,id_insumo,insumo_nombre,cantidad,precio_unitario,subtotal) VALUES(?,?,?,?,?,?,?)', [req.usuario.id_usuario, result.insertId, item.id_insumo, item.nombre, item.quantity, item.price, item.subtotal]); await connection.query("INSERT INTO movimientos_caja(id_usuario,tipo,categoria,concepto,monto,metodo_pago,origen,origen_id,fecha_movimiento) VALUES(?,'egreso','compra',?,?,?,'compra',?,?)", [req.usuario.id_usuario, `Compra #${result.insertId}`, discount.total,method, result.insertId, `${req.body.fecha_compra} 12:00:00`]); await connection.commit(); res.status(201).json({ ok: true, mensaje: 'Compra registrada', data: { id_compra: result.insertId, total: discount.total } }); } catch (error) { await connection.rollback(); throw error; } finally { connection.release(); } };
 exports.compras = async (req, res) => { const [rows] = await db.query('SELECT * FROM compras WHERE id_usuario=? AND activo=1 ORDER BY fecha_compra DESC,id_compra DESC', [req.usuario.id_usuario]); res.json({ ok: true, data: rows }); };
 exports.compra = async (req, res) => { const [[purchase]] = await db.query('SELECT * FROM compras WHERE id_compra=? AND id_usuario=? AND activo=1', [req.params.id, req.usuario.id_usuario]); if (!purchase) return res.status(404).json({ ok: false, mensaje: 'Compra no encontrada' }); const [details] = await db.query('SELECT * FROM compra_detalles WHERE id_compra=? AND id_usuario=?', [purchase.id_compra, req.usuario.id_usuario]); res.json({ ok: true, data: { ...purchase, detalles: details } }); };
-exports.caja = async (req, res) => { let where = 'id_usuario=?'; const args = [req.usuario.id_usuario]; if (req.query.tipo) { where += ' AND tipo=?'; args.push(req.query.tipo); } const [rows] = await db.query(`SELECT * FROM movimientos_caja WHERE ${where} ORDER BY fecha_movimiento ${req.query.orden === 'asc' ? 'ASC' : 'DESC'}`, args); res.json({ ok: true, data: rows }); };
+exports.caja = async (req, res) => { let where = 'm.id_usuario=?'; const args = [req.usuario.id_usuario]; if (req.query.tipo) { where += ' AND m.tipo=?'; args.push(req.query.tipo); } const [rows] = await db.query(`SELECT m.*, CASE WHEN m.origen='compra' THEN c.proveedor WHEN m.origen='pedido' THEN p.cliente_nombre ELSE NULL END AS contraparte FROM movimientos_caja m LEFT JOIN compras c ON m.origen='compra' AND c.id_compra=m.origen_id AND c.id_usuario=m.id_usuario LEFT JOIN pedidos p ON m.origen='pedido' AND p.id_pedido=m.origen_id AND p.id_usuario=m.id_usuario WHERE ${where} ORDER BY m.fecha_movimiento ${req.query.orden === 'asc' ? 'ASC' : 'DESC'}`, args); res.json({ ok: true, data: rows }); };
 exports.resumen = async (req, res) => { const [[summary]] = await db.query("SELECT COALESCE(SUM(CASE WHEN tipo='ingreso' AND anulado=0 THEN monto ELSE 0 END),0) ingresos,COALESCE(SUM(CASE WHEN tipo='egreso' AND anulado=0 THEN monto ELSE 0 END),0) egresos FROM movimientos_caja WHERE id_usuario=?", [req.usuario.id_usuario]); summary.balance = summary.ingresos - summary.egresos; res.json({ ok: true, data: summary }); };
 exports.dashboard = async (req, res) => {
   const userId = req.usuario.id_usuario;

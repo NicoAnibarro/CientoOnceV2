@@ -13,7 +13,7 @@ import MapView, { Marker, PROVIDER_GOOGLE } from "react-native-maps";
 import * as Location from "expo-location";
 import { Button, IconButton, Input, Loading } from "./UI";
 import { api, message } from "../api/api";
-import colors from "../theme/colors";
+import colors, { registerThemeListener } from "../theme/colors";
 
 const fallback = {
   latitude: -34.6037,
@@ -309,42 +309,47 @@ export default function LocationPicker({ visible, value, onClose, onConfirm }) {
     </Modal>
   );
 }
-const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: "#FFFAF0" },
-  header: {
-    padding: 18,
-    paddingTop: 52,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 10,
-  },
-  title: { fontSize: 24, fontWeight: "800" },
-  subtitle: { color: "#647168", marginTop: 2 },
-  search: { paddingHorizontal: 16, zIndex: 3 },
-  suggestions: {
-    backgroundColor: "#FFF",
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: "#D9E6DD",
-    marginTop: -7,
-    marginBottom: 8,
-    elevation: 8,
-    maxHeight: 220,
-  },
-  suggestion: {
-    padding: 13,
-    borderBottomWidth: 1,
-    borderBottomColor: "#EDF2EE",
-  },
-  suggestionText: { color: "#1D2922" },
-  searchError: {
-    color: "#B34736",
-    fontSize: 12,
-    marginTop: -5,
-    marginBottom: 8,
-  },
-  map: { flex: 1, minHeight: 280 },
-  loading: { position: "absolute", top: "42%", left: 0, right: 0 },
-  footer: { padding: 16, backgroundColor: "#FFFAF0" },
-  note: { color: "#647168", fontSize: 12, marginTop: -5, marginBottom: 5 },
+const createStyles = () =>
+  StyleSheet.create({
+    screen: { flex: 1, backgroundColor: colors.background },
+    header: {
+      padding: 18,
+      paddingTop: 52,
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 10,
+    },
+    title: { fontSize: 24, fontWeight: "800" },
+    subtitle: { color: "#647168", marginTop: 2 },
+    search: { paddingHorizontal: 16, zIndex: 3 },
+    suggestions: {
+      backgroundColor: "#FFF",
+      borderRadius: 14,
+      borderWidth: 1,
+      borderColor: "#D9E6DD",
+      marginTop: -7,
+      marginBottom: 8,
+      elevation: 8,
+      maxHeight: 220,
+    },
+    suggestion: {
+      padding: 13,
+      borderBottomWidth: 1,
+      borderBottomColor: "#EDF2EE",
+    },
+    suggestionText: { color: "#1D2922" },
+    searchError: {
+      color: "#B34736",
+      fontSize: 12,
+      marginTop: -5,
+      marginBottom: 8,
+    },
+    map: { flex: 1, minHeight: 280 },
+    loading: { position: "absolute", top: "42%", left: 0, right: 0 },
+    footer: { padding: 16, backgroundColor: colors.background },
+    note: { color: "#647168", fontSize: 12, marginTop: -5, marginBottom: 5 },
+  });
+let styles = createStyles();
+registerThemeListener(() => {
+  styles = createStyles();
 });

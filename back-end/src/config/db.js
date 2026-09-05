@@ -14,6 +14,8 @@ const pool = mysql.createPool({
   connectionLimit: 10,
   decimalNumbers: true,
   charset: 'utf8mb4',
+  // Aiven guarda DATETIME en UTC; el cliente lo convierte luego a hora argentina.
+  timezone: 'Z',
   ssl,
 });
 module.exports = pool;

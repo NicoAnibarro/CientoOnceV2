@@ -3,9 +3,23 @@ USE ciento_once_v2;
 
 CREATE TABLE usuarios (
  id_usuario INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, nombre VARCHAR(100) NOT NULL,
- email VARCHAR(150) NOT NULL UNIQUE, password_hash VARCHAR(255) NOT NULL, activo TINYINT(1) NOT NULL DEFAULT 1,
+ email VARCHAR(150) NOT NULL UNIQUE, password_hash VARCHAR(255) NOT NULL,
+ email_verificado TINYINT(1) NOT NULL DEFAULT 0, fecha_verificacion_email DATETIME NULL,
+ sesion_version INT UNSIGNED NOT NULL DEFAULT 0,
+ activo TINYINT(1) NOT NULL DEFAULT 1,
  fecha_creacion DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
  fecha_actualizacion DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB;
+
+CREATE TABLE tokens_autenticacion (
+ id_token_autenticacion BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+ id_usuario INT UNSIGNED NOT NULL,
+ proposito ENUM('verificar_email','recuperar_password') NOT NULL,
+ token_hash CHAR(64) NOT NULL UNIQUE, codigo_hash CHAR(64) NOT NULL,
+ vence_en DATETIME NOT NULL, usado_en DATETIME NULL, intentos SMALLINT UNSIGNED NOT NULL DEFAULT 0,
+ fecha_creacion DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+ INDEX idx_token_usuario_proposito(id_usuario,proposito,vence_en),
+ CONSTRAINT fk_token_auth_usuario FOREIGN KEY(id_usuario) REFERENCES usuarios(id_usuario) ON DELETE CASCADE
 ) ENGINE=InnoDB;
 
 CREATE TABLE clientes (

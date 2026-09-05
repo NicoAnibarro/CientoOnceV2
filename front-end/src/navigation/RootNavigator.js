@@ -3,10 +3,13 @@ import { createNativeStackNavigator } from "@react-navigation/native-stack";
 import { createBottomTabNavigator } from "@react-navigation/bottom-tabs";
 import { Ionicons } from "@expo/vector-icons";
 import { useAuth } from "../context/AuthContext";
+import { useAppTheme } from "../context/ThemeContext";
 import { Loading } from "../components/UI";
 import {
   Login,
   Registro,
+  VerificarCorreo,
+  RecuperarPassword,
   Home,
   CrudList,
   Pedidos,
@@ -22,6 +25,9 @@ import {
   RutasReparto,
   HistorialCliente,
   CentroComercial,
+  Flyers,
+  Perfil,
+  PoliticaPrivacidad,
 } from "../screens/Screens";
 import colors from "../theme/colors";
 
@@ -29,6 +35,7 @@ const Stack = createNativeStackNavigator(),
   Tab = createBottomTabNavigator();
 function Main() {
   const { session } = useAuth();
+  useAppTheme();
   const role = session?.usuario?.rol || "propietario",
     manager = ["propietario", "administrador"].includes(role);
   return (
@@ -36,6 +43,11 @@ function Main() {
       screenOptions={({ route }) => ({
         headerShown: false,
         tabBarActiveTintColor: colors.primary,
+        tabBarInactiveTintColor: colors.textSecondary,
+        tabBarStyle: {
+          backgroundColor: colors.surface,
+          borderTopColor: colors.border,
+        },
         tabBarIcon: ({ color, size }) => (
           <Ionicons
             name={
@@ -69,9 +81,16 @@ function Main() {
 }
 export default function Root() {
   const { session, loading } = useAuth();
+  useAppTheme();
   if (loading) return <Loading />;
   return (
-    <Stack.Navigator>
+    <Stack.Navigator
+      screenOptions={{
+        headerStyle: { backgroundColor: colors.surface },
+        headerTintColor: colors.primaryDark,
+        contentStyle: { backgroundColor: colors.background },
+      }}
+    >
       {!session ? (
         <>
           <Stack.Screen
@@ -83,6 +102,21 @@ export default function Root() {
             name="Registro"
             component={Registro}
             options={{ headerShown: false }}
+          />
+          <Stack.Screen
+            name="VerificarCorreo"
+            component={VerificarCorreo}
+            options={{ headerShown: false }}
+          />
+          <Stack.Screen
+            name="RecuperarPassword"
+            component={RecuperarPassword}
+            options={{ headerShown: false }}
+          />
+          <Stack.Screen
+            name="PoliticaPrivacidad"
+            component={PoliticaPrivacidad}
+            options={{ title: "Privacidad" }}
           />
         </>
       ) : (
@@ -134,6 +168,21 @@ export default function Root() {
             name="CentroComercial"
             component={CentroComercial}
             options={{ title: "Centro comercial" }}
+          />
+          <Stack.Screen
+            name="Perfil"
+            component={Perfil}
+            options={{ title: "Mi perfil" }}
+          />
+          <Stack.Screen
+            name="PoliticaPrivacidad"
+            component={PoliticaPrivacidad}
+            options={{ title: "Privacidad" }}
+          />
+          <Stack.Screen
+            name="Flyers"
+            component={Flyers}
+            options={{ title: "Creador de flyers" }}
           />
           <Stack.Screen name="Ayuda" component={Ayuda} />
         </>

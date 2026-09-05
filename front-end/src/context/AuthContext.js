@@ -36,7 +36,7 @@ export function AuthProvider({ children }) {
         login: (e, p) => enter("/auth/login", { email: e, password: p }),
         employeeLogin: (e, pin) =>
           enter("/auth/employee-login", { email: e, pin }),
-        register: (b) => enter("/auth/register", b),
+        register: (body) => api.post("/auth/register", body),
         logout,
       }}
     >

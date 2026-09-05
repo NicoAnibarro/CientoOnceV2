@@ -44,6 +44,11 @@ async function run() {
     assert.equal(response.status, 401);
     response = await request('/auth/me', { token: tokenA });
     assert.equal(response.status, 200);
+    response = await request('/configuracion-comercial/paleta-app', { method: 'PATCH', token: tokenA, body: { paleta_app: 'azul' } });
+    assert.equal(response.status, 200, JSON.stringify(response.json));
+    response = await request('/configuracion-comercial/paleta-app', { token: tokenA });
+    assert.equal(response.status, 200);
+    assert.equal(response.json.data.paleta_app, 'azul');
 
     response = await request('/tickets/analizar', { method: 'POST' });
     assert.equal(response.status, 401);
@@ -57,6 +62,11 @@ async function run() {
     assert.equal(response.json.data.some(p => p.id_producto === idProducto), false);
     response = await request(`/productos/${idProducto}`, { method: 'PUT', token: tokenB, body: { nombre: 'Ataque', categoria: 'dulce', costo_estimado: 0, precio_venta: 1, stock_actual: 0 } });
     assert.equal(response.status, 404);
+    response = await request(`/stock/productos/${idProducto}`, { method: 'POST', token: tokenA, body: { tipo: 'establecer', cantidad: 0, motivo: 'Prueba stock cero' } });
+    assert.equal(response.status, 200, JSON.stringify(response.json));
+    assert.equal(response.json.data.stock_actual, 0);
+    response = await request(`/stock/productos/${idProducto}`, { method: 'POST', token: tokenA, body: { tipo: 'establecer', cantidad: 2, motivo: 'Restaurar prueba' } });
+    assert.equal(response.status, 200, JSON.stringify(response.json));
 
     response = await request('/clientes', { method: 'POST', token: tokenA, body: { nombre: 'Cliente integración', telefono: '123', direccion: 'Calle prueba', latitud: -27.3671, longitud: -55.8961, ubicacion_origen: 'mapa' } });
     assert.equal(response.status, 201);
@@ -160,6 +170,19 @@ async function run() {
     assert.equal(response.json.data.some(item => item.id_costo_producto === idCosto), false);
     response = await request(`/costos-productos/${idCosto}/desactivar`, { method: 'PATCH', token: tokenA });
     assert.equal(response.status, 200);
+
+    let publicPage = await fetch(base + '/privacidad');
+    assert.equal(publicPage.status, 200);
+    assert.match(await publicPage.text(), /privacidad de Ciento Once/);
+    publicPage = await fetch(base + '/eliminar-cuenta');
+    assert.equal(publicPage.status, 200);
+
+    response = await request('/auth/account', { method: 'DELETE', token: tokenB, body: { password: 'incorrecta', confirmacion: 'ELIMINAR' } });
+    assert.equal(response.status, 401);
+    response = await request('/auth/account', { method: 'DELETE', token: tokenB, body: { password: 'secreto2', confirmacion: 'ELIMINAR' } });
+    assert.equal(response.status, 200, JSON.stringify(response.json));
+    response = await request('/auth/me', { token: tokenB });
+    assert.equal(response.status, 401);
 
     console.log('OK: autenticación, aislamiento, CRUD, stock, pedidos, pagos, compras y caja');
   } finally {
