@@ -3,7 +3,6 @@ import {
   Alert,
   FlatList,
   Image,
-  KeyboardAvoidingView,
   Linking,
   Modal,
   Platform,
@@ -15,6 +14,7 @@ import {
   Text,
   View,
 } from "react-native";
+import { KeyboardAwareScrollView } from "react-native-keyboard-controller";
 import { useFocusEffect } from "@react-navigation/native";
 import { Ionicons } from "@expo/vector-icons";
 import DateTimePicker from "@react-native-community/datetimepicker";
@@ -84,7 +84,8 @@ function Form({ title, children, onRefresh, centered = false }) {
   const refresh = usePullRefresh(onRefresh);
   return (
     <Screen>
-      <ScrollView
+      <KeyboardAwareScrollView
+        bottomOffset={92}
         style={{ flex: 1 }}
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}
@@ -105,26 +106,23 @@ function Form({ title, children, onRefresh, centered = false }) {
       >
         {title ? <Header title={title} /> : null}
         {children}
-      </ScrollView>
+      </KeyboardAwareScrollView>
     </Screen>
   );
 }
 
 function KeyboardDialog({ children }) {
   return (
-    <KeyboardAvoidingView
-      style={s.modalCenter}
-      behavior={Platform.OS === "ios" ? "padding" : "height"}
-    >
-      <ScrollView
+    <View style={s.modalCenter}>
+      <KeyboardAwareScrollView
+        bottomOffset={56}
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode="interactive"
-        automaticallyAdjustKeyboardInsets
         contentContainerStyle={s.modalKeyboardContent}
       >
         <View style={s.dialog}>{children}</View>
-      </ScrollView>
-    </KeyboardAvoidingView>
+      </KeyboardAwareScrollView>
+    </View>
   );
 }
 
@@ -225,6 +223,8 @@ function PaymentField({ value, onChange, title = "Método de pago" }) {
             key={key}
             onPress={() => onChange(key)}
             style={[s.paymentChip, value === key && s.paymentChipActive]}
+            accessibilityRole="radio"
+            accessibilityState={{ selected: value === key }}
           >
             <Ionicons
               name={icon}
@@ -6936,6 +6936,22 @@ const createScreenStyles = () =>
       color: "#FFF",
       fontWeight: "700",
       textTransform: "capitalize",
+    },
+    paymentChip: {
+      minHeight: 43,
+      paddingHorizontal: 13,
+      paddingVertical: 10,
+      borderRadius: 12,
+      borderWidth: 1,
+      borderColor: colors.border,
+      backgroundColor: colors.surface,
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 7,
+    },
+    paymentChipActive: {
+      backgroundColor: colors.primary,
+      borderColor: colors.primaryDark,
     },
     pill: {
       alignSelf: "flex-start",

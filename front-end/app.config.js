@@ -1,8 +1,8 @@
 module.exports = () => ({
   expo: {
-    name: "Ciento Once V2",
+    name: "Ciento Once",
     slug: "ciento-once-v2",
-    version: "1.3.0",
+    version: "1.3.1",
     orientation: "portrait",
     icon: "./assets/icon.png",
     userInterfaceStyle: "light",
@@ -10,17 +10,20 @@ module.exports = () => ({
     ios: { supportsTablet: true },
     android: {
       package: "com.nicoanibarro.cientooncev2",
-      versionCode: 4,
+      versionCode: 5,
       softwareKeyboardLayoutMode: "resize",
       config: {
         googleMaps: { apiKey: process.env.EXPO_PUBLIC_GOOGLE_MAPS_ANDROID_KEY },
       },
       adaptiveIcon: {
-        backgroundColor: "#E6F4FE",
+        backgroundColor: "#FFFAF0",
         foregroundImage: "./assets/android-icon-foreground.png",
-        backgroundImage: "./assets/android-icon-background.png",
-        monochromeImage: "./assets/android-icon-monochrome.png",
       },
+    },
+    splash: {
+      image: "./assets/splash-icon.png",
+      resizeMode: "contain",
+      backgroundColor: "#FFFAF0",
     },
     web: { favicon: "./assets/favicon.png" },
     plugins: [
