@@ -17,6 +17,7 @@
     "db:migrate:007": "node scripts/migrate-007.js",
     "db:migrate:008": "node scripts/migrate-008.js",
     "db:migrate:009": "node scripts/migrate-009.js",
+    "db:migrate:011": "node scripts/migrate-011.js",
     "db:migrate:production": "node scripts/migrate-production.js",
     "db:clean:production": "node scripts/clean-production-business-data.js",
     "gmail:verify": "node scripts/verify-gmail.js",
