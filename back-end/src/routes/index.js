@@ -153,6 +153,20 @@ r.patch(
   viandas.removeType,
 );
 r.get("/viandas", auth, viandas.list);
+r.get("/viandas/clientes", auth, viandas.clients);
+r.get("/viandas/clientes/:id_cliente", auth, viandas.client);
+r.post(
+  "/viandas/series/:id_serie/pagos",
+  auth,
+  permit("propietario", "administrador", "caja", "ventas"),
+  viandas.addPayment,
+);
+r.post(
+  "/viandas/:id/pago-dia",
+  auth,
+  permit("propietario", "administrador", "caja", "ventas"),
+  viandas.dailyPayment,
+);
 r.post(
   "/viandas",
   auth,

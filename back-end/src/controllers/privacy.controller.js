@@ -90,6 +90,8 @@ exports.deleteAccount = async (req, res) => {
     const tables = [
       "pedido_detalles",
       "compra_detalles",
+      "pagos_viandas",
+      "pedido_vianda_detalles",
       "pedidos_viandas",
       "series_viandas",
       "tipos_vianda",

@@ -92,6 +92,18 @@ const migrations = [
       ["table", "pedidos_viandas"],
     ],
   },
+  {
+    id: "011_viandas_planes_pagos",
+    file: "011_viandas_planes_pagos.sql",
+    checks: [
+      ["column", "series_viandas", "id_cliente"],
+      ["column", "series_viandas", "total_plan"],
+      ["column", "series_viandas", "monto_pagado"],
+      ["column", "series_viandas", "pagado"],
+      ["table", "pedido_vianda_detalles"],
+      ["table", "pagos_viandas"],
+    ],
+  },
 ];
 
 async function check(connection, rule, database) {
@@ -131,7 +143,10 @@ async function run() {
     throw new Error("La migración productiva rechaza conexiones locales");
   }
   const database = String(process.env.DB_NAME || "").trim();
-  if (!database) throw new Error("Falta DB_NAME");
+  if (database !== "ciento_once_v2")
+    throw new Error(
+      `Base rechazada: se esperaba ciento_once_v2 y se recibió ${database || "(vacía)"}`,
+    );
   const connection = await mysql.createConnection({
     host,
     port: Number(process.env.DB_PORT || 3306),

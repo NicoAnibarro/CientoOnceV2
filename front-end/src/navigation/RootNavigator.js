@@ -30,12 +30,12 @@ import {
   PoliticaPrivacidad,
 } from "../screens/Screens";
 import colors from "../theme/colors";
+import { ConfiguracionViandas, RutasViandas } from "../screens/Viandas";
 import {
   Viandas,
   NuevaVianda,
-  ConfiguracionViandas,
-  RutasViandas,
-} from "../screens/Viandas";
+  DetalleViandasCliente,
+} from "../screens/ViandasGestion";
 
 const Stack = createNativeStackNavigator(),
   Tab = createBottomTabNavigator();
@@ -61,7 +61,7 @@ function Main() {
                 Inicio: "home",
                 Productos: "fast-food",
                 Pedidos: "receipt",
-                Stock: "cube",
+                Viandas: "restaurant",
                 Caja: "cash",
               }[route.name]
             }
@@ -78,7 +78,9 @@ function Main() {
       {manager || ["ventas", "reparto", "caja"].includes(role) ? (
         <Tab.Screen name="Pedidos" component={Pedidos} />
       ) : null}
-      {manager ? <Tab.Screen name="Stock" component={Stock} /> : null}
+      {manager || ["ventas", "reparto", "caja"].includes(role) ? (
+        <Tab.Screen name="Viandas" component={Viandas} />
+      ) : null}
       {manager || role === "caja" ? (
         <Tab.Screen name="Caja" component={Caja} />
       ) : null}
@@ -144,15 +146,18 @@ export default function Root() {
             component={NuevaCompra}
             options={{ title: "Nueva compra" }}
           />
-          <Stack.Screen
-            name="Viandas"
-            component={Viandas}
-            options={{ title: "Viandas" }}
-          />
+          <Stack.Screen name="Stock" component={Stock} />
           <Stack.Screen
             name="NuevaVianda"
             component={NuevaVianda}
             options={{ title: "Reserva de vianda" }}
+          />
+          <Stack.Screen
+            name="DetalleViandasCliente"
+            component={DetalleViandasCliente}
+            options={({ route }) => ({
+              title: route.params?.nombre || "Detalle de viandas",
+            })}
           />
           <Stack.Screen
             name="ConfiguracionViandas"

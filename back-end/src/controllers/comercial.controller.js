@@ -141,6 +141,8 @@ exports.backup = async (req, res) => {
       "configuraciones_viandas",
       "series_viandas",
       "pedidos_viandas",
+      "pedido_vianda_detalles",
+      "pagos_viandas",
     ];
   const data = {
     version: 2,

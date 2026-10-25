@@ -9,6 +9,8 @@ const cleanedTables = [
   "pedidos",
   "compra_detalles",
   "compras",
+  "pagos_viandas",
+  "pedido_vianda_detalles",
   "pedidos_viandas",
   "series_viandas",
   "cierres_caja",

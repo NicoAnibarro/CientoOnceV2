@@ -1104,6 +1104,7 @@ export function Home({ navigation }) {
               ["cube-outline", "Productos", "Productos"],
               ["leaf-outline", "Insumos", "Insumos"],
               ["restaurant-outline", "Viandas", "Viandas"],
+              ["cube-outline", "Stock", "Stock"],
               ["calculator-outline", "Calculadora de costos", "Calculadora"],
               ["pricetags-outline", "Costos guardados", "CostosProductos"],
               ["color-palette-outline", "Creador de flyers", "Flyers"],
@@ -1113,7 +1114,7 @@ export function Home({ navigation }) {
             ]
               .filter(
                 ([, , route]) =>
-                  route !== "CentroComercial" ||
+                  !["CentroComercial", "Stock"].includes(route) ||
                   ["propietario", "administrador"].includes(
                     session?.usuario?.rol || "propietario",
                   ),

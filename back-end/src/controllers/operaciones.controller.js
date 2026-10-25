@@ -682,7 +682,7 @@ exports.caja = async (req, res) => {
     args.push(req.query.tipo);
   }
   const [rows] = await db.query(
-    `SELECT m.*, CASE WHEN m.origen='compra' THEN c.proveedor WHEN m.origen='pedido' THEN p.cliente_nombre WHEN m.origen='vianda' THEN v.cliente_nombre ELSE NULL END AS contraparte FROM movimientos_caja m LEFT JOIN compras c ON m.origen='compra' AND c.id_compra=m.origen_id AND c.id_usuario=m.id_usuario LEFT JOIN pedidos p ON m.origen='pedido' AND p.id_pedido=m.origen_id AND p.id_usuario=m.id_usuario LEFT JOIN pedidos_viandas v ON m.origen='vianda' AND v.id_pedido_vianda=m.origen_id AND v.id_usuario=m.id_usuario WHERE ${where} ORDER BY m.fecha_movimiento ${req.query.orden === "asc" ? "ASC" : "DESC"}`,
+    `SELECT m.*, CASE WHEN m.origen='compra' THEN c.proveedor WHEN m.origen='pedido' THEN p.cliente_nombre WHEN m.origen='vianda' THEN sv.cliente_nombre ELSE NULL END AS contraparte FROM movimientos_caja m LEFT JOIN compras c ON m.origen='compra' AND c.id_compra=m.origen_id AND c.id_usuario=m.id_usuario LEFT JOIN pedidos p ON m.origen='pedido' AND p.id_pedido=m.origen_id AND p.id_usuario=m.id_usuario LEFT JOIN pagos_viandas pv ON m.origen='vianda' AND pv.id_pago_vianda=m.origen_id AND pv.id_usuario=m.id_usuario LEFT JOIN series_viandas sv ON sv.id_serie=pv.id_serie AND sv.id_usuario=m.id_usuario WHERE ${where} ORDER BY m.fecha_movimiento ${req.query.orden === "asc" ? "ASC" : "DESC"}`,
     args,
   );
   res.json({ ok: true, data: rows });
@@ -988,8 +988,11 @@ exports.informes = async (req, res) => {
   }
   const [meals] = await db.query(
     `SELECT v.*,s.frecuencia,
-    CONCAT(v.tipo_nombre,' x',v.cantidad,
-      IF(v.con_postre=1,' + postre',''),IF(v.con_envio=1,' + envio','')) detalle
+    COALESCE((SELECT GROUP_CONCAT(CONCAT(d.tipo_nombre,' x',d.cantidad,
+      IF(d.con_postre=1,' + postre','')) SEPARATOR ', ')
+      FROM pedido_vianda_detalles d WHERE d.id_pedido_vianda=v.id_pedido_vianda),
+      CONCAT(v.tipo_nombre,' x',v.cantidad,
+      IF(v.con_postre=1,' + postre',''))) detalle
     FROM pedidos_viandas v JOIN series_viandas s ON s.id_serie=v.id_serie
     WHERE v.id_usuario=? AND v.activo=1 ${mealWhere}
     ORDER BY v.fecha_entrega DESC,v.hora_entrega DESC`,
