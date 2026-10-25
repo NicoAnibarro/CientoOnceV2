@@ -8,6 +8,7 @@
     "dev": "node src/server.js",
     "check": "node --check src/server.js && node --check src/app.js",
     "test:integration": "node tests/integration.js",
+    "test:isolated": "node scripts/test-isolated.js",
     "db:import": "node scripts/import-schema.js",
     "db:migrate:003": "node scripts/migrate-003.js",
     "db:migrate:004": "node scripts/migrate-004.js",

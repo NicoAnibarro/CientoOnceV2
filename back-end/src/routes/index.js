@@ -10,6 +10,7 @@ const a = require("../controllers/auth.controller"),
   repartos = require("../controllers/repartos.controller"),
   flyers = require("../controllers/flyers.controller"),
   tickets = require("../controllers/tickets.controller"),
+  viandas = require("../controllers/viandas.controller"),
   privacy = require("../controllers/privacy.controller"),
   { controller } = require("../controllers/crud.controller");
 const r = express.Router(),
@@ -50,7 +51,10 @@ const imageUpload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 3 * 1024 * 1024, files: 3 },
   fileFilter: (_req, file, done) =>
-    done(null, ["image/jpeg", "image/png", "image/webp"].includes(file.mimetype)),
+    done(
+      null,
+      ["image/jpeg", "image/png", "image/webp"].includes(file.mimetype),
+    ),
 });
 r.post("/auth/register", lim, a.register);
 r.post("/auth/login", lim, a.login);
@@ -70,7 +74,14 @@ r.get("/geo/autocomplete", auth, geoLim, g.autocomplete);
 r.get("/geo/geocode", auth, geoLim, g.geocode);
 r.get("/geo/reverse", auth, geoLim, g.reverse);
 r.get("/repartos/pedidos", auth, repartos.pedidos);
+r.get("/repartos/viandas", auth, repartos.viandas);
 r.post("/repartos/optimizar", auth, routeLim, repartos.optimizar);
+r.post(
+  "/repartos/viandas/optimizar",
+  auth,
+  routeLim,
+  repartos.optimizarViandas,
+);
 r.post(
   "/tickets/analizar",
   auth,
@@ -116,6 +127,62 @@ r.patch(
   permit("propietario", "administrador", "ventas", "reparto"),
   o.estado,
 );
+r.get("/viandas/configuracion", auth, viandas.config);
+r.put(
+  "/viandas/configuracion",
+  auth,
+  permit("propietario", "administrador"),
+  viandas.saveConfig,
+);
+r.post(
+  "/viandas/tipos",
+  auth,
+  permit("propietario", "administrador"),
+  viandas.createType,
+);
+r.put(
+  "/viandas/tipos/:id",
+  auth,
+  permit("propietario", "administrador"),
+  viandas.updateType,
+);
+r.patch(
+  "/viandas/tipos/:id/desactivar",
+  auth,
+  permit("propietario", "administrador"),
+  viandas.removeType,
+);
+r.get("/viandas", auth, viandas.list);
+r.post(
+  "/viandas",
+  auth,
+  permit("propietario", "administrador", "ventas"),
+  viandas.create,
+);
+r.put(
+  "/viandas/:id",
+  auth,
+  permit("propietario", "administrador", "ventas"),
+  viandas.update,
+);
+r.patch(
+  "/viandas/:id/estado",
+  auth,
+  permit("propietario", "administrador", "ventas", "reparto"),
+  viandas.state,
+);
+r.patch(
+  "/viandas/:id/pagado",
+  auth,
+  permit("propietario", "administrador", "ventas", "caja"),
+  viandas.paid,
+);
+r.patch(
+  "/viandas/:id/desactivar",
+  auth,
+  permit("propietario", "administrador"),
+  viandas.remove,
+);
 r.patch(
   "/pedidos/:id/pagado",
   auth,
@@ -129,11 +196,26 @@ r.patch(
   o.eliminarPedido,
 );
 r.get("/categorias-productos", auth, o.categorias);
-r.post("/categorias-productos", auth, permit("propietario", "administrador"), o.crearCategoria);
-r.patch("/categorias-productos/:id/desactivar", auth, permit("propietario", "administrador"), o.desactivarCategoria);
+r.post(
+  "/categorias-productos",
+  auth,
+  permit("propietario", "administrador"),
+  o.crearCategoria,
+);
+r.patch(
+  "/categorias-productos/:id/desactivar",
+  auth,
+  permit("propietario", "administrador"),
+  o.desactivarCategoria,
+);
 r.get("/informes", auth, permit("propietario", "administrador"), o.informes);
 r.get("/stock", auth, o.stock);
-r.post("/stock/productos/:id", auth, permit("propietario", "administrador"), o.moverStock);
+r.post(
+  "/stock/productos/:id",
+  auth,
+  permit("propietario", "administrador"),
+  o.moverStock,
+);
 r.get("/stock/reposicion", auth, commercial.reposicion);
 r.get("/compras", auth, o.compras);
 r.get("/compras/:id", auth, o.compra);
@@ -208,11 +290,39 @@ r.patch(
   commercial.guardarPaletaApp,
 );
 r.get("/configuracion-comercial/logo", auth, flyers.logo);
-r.put("/configuracion-comercial/logo", auth, permit("propietario", "administrador"), imageUpload.single("imagen"), flyers.guardarLogo);
-r.post("/flyers/generar", auth, permit("propietario", "administrador"), ticketLim, imageUpload.array("imagenes", 3), flyers.generar);
+r.put(
+  "/configuracion-comercial/logo",
+  auth,
+  permit("propietario", "administrador"),
+  imageUpload.single("imagen"),
+  flyers.guardarLogo,
+);
+r.post(
+  "/flyers/generar",
+  auth,
+  permit("propietario", "administrador"),
+  ticketLim,
+  imageUpload.array("imagenes", 3),
+  flyers.generar,
+);
 r.get("/costos-productos", auth, o.listarCostos);
-r.post("/costos-productos", auth, permit("propietario", "administrador"), o.guardarCosto);
-r.put("/costos-productos/:id", auth, permit("propietario", "administrador"), o.editarCosto);
-r.patch("/costos-productos/:id/desactivar", auth, permit("propietario", "administrador"), o.eliminarCosto);
+r.post(
+  "/costos-productos",
+  auth,
+  permit("propietario", "administrador"),
+  o.guardarCosto,
+);
+r.put(
+  "/costos-productos/:id",
+  auth,
+  permit("propietario", "administrador"),
+  o.editarCosto,
+);
+r.patch(
+  "/costos-productos/:id/desactivar",
+  auth,
+  permit("propietario", "administrador"),
+  o.eliminarCosto,
+);
 r.get("/dashboard", auth, o.dashboard);
 module.exports = r;

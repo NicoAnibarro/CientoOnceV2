@@ -1,6 +1,6 @@
-module.exports = (error, req, res, next) => {
-  console.error(error);
+module.exports = (error, _req, res, _next) => {
   const status = error.status || 500;
+  if (status >= 500) console.error(error);
   const development = process.env.NODE_ENV === 'development';
   res.status(status).json({
     ok: false,

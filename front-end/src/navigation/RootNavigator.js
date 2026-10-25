@@ -30,6 +30,12 @@ import {
   PoliticaPrivacidad,
 } from "../screens/Screens";
 import colors from "../theme/colors";
+import {
+  Viandas,
+  NuevaVianda,
+  ConfiguracionViandas,
+  RutasViandas,
+} from "../screens/Viandas";
 
 const Stack = createNativeStackNavigator(),
   Tab = createBottomTabNavigator();
@@ -137,6 +143,26 @@ export default function Root() {
             name="NuevaCompra"
             component={NuevaCompra}
             options={{ title: "Nueva compra" }}
+          />
+          <Stack.Screen
+            name="Viandas"
+            component={Viandas}
+            options={{ title: "Viandas" }}
+          />
+          <Stack.Screen
+            name="NuevaVianda"
+            component={NuevaVianda}
+            options={{ title: "Reserva de vianda" }}
+          />
+          <Stack.Screen
+            name="ConfiguracionViandas"
+            component={ConfiguracionViandas}
+            options={{ title: "Precios de viandas" }}
+          />
+          <Stack.Screen
+            name="RutasViandas"
+            component={RutasViandas}
+            options={{ title: "Reparto de viandas" }}
           />
           <Stack.Screen name="Calculadora" component={Calculadora} />
           <Stack.Screen

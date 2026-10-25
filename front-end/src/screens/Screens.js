@@ -1,4 +1,10 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   Alert,
   FlatList,
@@ -67,6 +73,78 @@ const localDateTime = (value) =>
     dateStyle: "short",
     timeStyle: "short",
   }).format(new Date(value));
+
+const normalizedText = (value = "") =>
+  String(value)
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+const IGNORED_MATCH_WORDS = new Set([
+  "con",
+  "sin",
+  "del",
+  "las",
+  "los",
+  "para",
+  "por",
+  "una",
+  "uno",
+  "unidad",
+  "pack",
+]);
+const matchWords = (value) =>
+  [...new Set(normalizedText(value).split(" "))].filter(
+    (word) =>
+      word.length >= 3 && !IGNORED_MATCH_WORDS.has(word) && !/^\d+$/.test(word),
+  );
+function relatedSupplyOptions(item, supplies, manualSearch) {
+  const search = normalizedText(manualSearch);
+  if (search) {
+    const words = matchWords(search);
+    return supplies
+      .filter((supply) => {
+        const name = normalizedText(supply.nombre);
+        return (
+          name.includes(search) || words.some((word) => name.includes(word))
+        );
+      })
+      .slice(0, 12);
+  }
+  const words = matchWords(item.nombre_editado || item.nombre);
+  const matches = supplies
+    .map((supply) => {
+      const nameWords = matchWords(supply.nombre);
+      const score = words.filter((word) =>
+        nameWords.some(
+          (candidate) =>
+            candidate === word ||
+            candidate.includes(word) ||
+            word.includes(candidate),
+        ),
+      ).length;
+      return { supply, score };
+    })
+    .filter((entry) => entry.score > 0)
+    .sort(
+      (left, right) =>
+        right.score - left.score ||
+        left.supply.nombre.localeCompare(right.supply.nombre),
+    )
+    .map((entry) => entry.supply)
+    .slice(0, 12);
+  if (
+    item.id_insumo &&
+    !matches.some((supply) => supply.id_insumo === item.id_insumo)
+  ) {
+    const selected = supplies.find(
+      (supply) => supply.id_insumo === item.id_insumo,
+    );
+    if (selected) matches.unshift(selected);
+  }
+  return matches;
+}
 
 function Header({ title, subtitle, action }) {
   return (
@@ -928,7 +1006,7 @@ export function Home({ navigation }) {
             onPress={() => go("Pedidos")}
           />
         </View>
-        {alerts.pedidos_atrasados > 0 || alerts.stock_bajo?.length ? (
+        {alerts.pedidos_atrasados > 0 ? (
           <Card style={s.alertPanel}>
             <View style={s.alertHeader}>
               <View style={s.alertIcon}>
@@ -945,18 +1023,6 @@ export function Home({ navigation }) {
               <Pressable style={s.alertRow} onPress={() => go("Pedidos")}>
                 <Text style={s.alertRowText}>
                   {alerts.pedidos_atrasados} pedidos con fecha vencida
-                </Text>
-                <Ionicons name="chevron-forward" size={18} color="#9A5D00" />
-              </Pressable>
-            ) : null}
-            {alerts.stock_bajo?.length ? (
-              <Pressable
-                style={s.alertRow}
-                disabled={!canManage}
-                onPress={() => go("Stock")}
-              >
-                <Text style={s.alertRowText}>
-                  {alerts.stock_bajo.length} productos debajo de su mínimo
                 </Text>
                 <Ionicons name="chevron-forward" size={18} color="#9A5D00" />
               </Pressable>
@@ -1037,6 +1103,7 @@ export function Home({ navigation }) {
               ["people-outline", "Clientes", "Clientes"],
               ["cube-outline", "Productos", "Productos"],
               ["leaf-outline", "Insumos", "Insumos"],
+              ["restaurant-outline", "Viandas", "Viandas"],
               ["calculator-outline", "Calculadora de costos", "Calculadora"],
               ["pricetags-outline", "Costos guardados", "CostosProductos"],
               ["color-palette-outline", "Creador de flyers", "Flyers"],
@@ -1089,10 +1156,9 @@ const crudConfig = {
       ["descripcion", "Descripción"],
       ["precio_venta", "Precio de venta"],
       ["costo_estimado", "Costo estimado"],
-      ["stock_actual", "Stock inicial"],
-      ["stock_minimo", "Alerta de stock mínimo"],
+      ["stock_actual", "Stock inicial (opcional)"],
     ],
-    defaults: { categoria: "Dulce", stock_actual: "0", stock_minimo: "5" },
+    defaults: { categoria: "Dulce", stock_actual: "0" },
   },
   Clientes: {
     path: "clientes",
@@ -1138,7 +1204,7 @@ function LegacyCrudList({ route, navigation }) {
   const [loading, setLoading] = useState(true);
   const load = useCallback(() => {
     setLoading(true);
-    const requests = [api.get(`/${config.path}`, { params: { limit: 100 } })];
+    const requests = [api.get(`/${config.path}`, { params: { all: true } })];
     if (config.path === "productos")
       requests.push(api.get("/categorias-productos"));
     Promise.all(requests)
@@ -1198,9 +1264,10 @@ function LegacyCrudList({ route, navigation }) {
       if (config.path === "insumos") {
         payload.tipo_medida = form.tipo_medida;
         payload.unidad_referencia = form.unidad_referencia;
-        payload.fecha_precio = String(
-          form.fecha_precio || new Date().toISOString(),
-        ).slice(0, 10);
+        payload.fecha_precio = String(form.fecha_precio || localDate()).slice(
+          0,
+          10,
+        );
       }
       editing
         ? await api.put(`/${config.path}/${editing}`, payload)
@@ -1386,7 +1453,6 @@ function LegacyCrudModal({
       "stock_actual",
       "precio_referencia",
       "cantidad_referencia",
-      "stock_minimo",
     ].includes(key);
   return (
     <Modal visible={visible} animationType="slide" onRequestClose={onClose}>
@@ -1509,7 +1575,7 @@ export function CrudList({ route, navigation }) {
   const load = useCallback(() => {
     setLoading(true);
     return Promise.all([
-      api.get(`/${config.path}`, { params: { limit: 100 } }),
+      api.get(`/${config.path}`, { params: { all: true } }),
       isProducts ? api.get("/categorias-productos") : Promise.resolve(null),
     ])
       .then(([a, b]) => {
@@ -1561,9 +1627,10 @@ export function CrudList({ route, navigation }) {
       if (config.path === "insumos") {
         payload.tipo_medida = form.tipo_medida;
         payload.unidad_referencia = form.unidad_referencia;
-        payload.fecha_precio = String(
-          form.fecha_precio || new Date().toISOString(),
-        ).slice(0, 10);
+        payload.fecha_precio = String(form.fecha_precio || localDate()).slice(
+          0,
+          10,
+        );
       }
       editing
         ? await api.put(`/${config.path}/${editing}`, payload)
@@ -1774,7 +1841,6 @@ function CrudModal({
       "stock_actual",
       "precio_referencia",
       "cantidad_referencia",
-      "stock_minimo",
     ].includes(key);
   return (
     <Modal visible={visible} animationType="slide" onRequestClose={onClose}>
@@ -1976,18 +2042,29 @@ function StatusPill({ active, text }) {
 
 export function Pedidos({ navigation }) {
   const [rows, setRows] = useState([]);
+  const [updating, setUpdating] = useState({});
+  const loadSequence = useRef(0);
   const [order, setOrder] = useState("fechaAsc");
   const [deliveryFilter, setDeliveryFilter] = useState("todos");
   const [paymentFilter, setPaymentFilter] = useState("todos");
   const [search, setSearch] = useState("");
-  const load = useCallback(
-    () =>
-      api
-        .get("/pedidos")
-        .then((response) => setRows(response.data.data))
-        .catch((error) => Alert.alert("Error", message(error))),
-    [],
-  );
+  const load = useCallback(async () => {
+    const sequence = ++loadSequence.current;
+    try {
+      const response = await api.get("/pedidos");
+      if (sequence === loadSequence.current) {
+        setRows(
+          response.data.data.map((item) => ({
+            ...item,
+            pagado: Number(item.pagado) === 1 || item.pagado === true,
+          })),
+        );
+      }
+    } catch (error) {
+      if (sequence === loadSequence.current)
+        Alert.alert("Error", message(error));
+    }
+  }, []);
   const refresh = usePullRefresh(load);
   useFocusEffect(
     useCallback(() => {
@@ -2032,10 +2109,73 @@ export function Pedidos({ navigation }) {
     `${order}-${deliveryFilter}-${paymentFilter}-${search}`,
   );
   const toggleDelivered = async (item) => {
-    await api.patch(`/pedidos/${item.id_pedido}/estado`, {
-      estado: item.estado === "entregado" ? "pendiente" : "entregado",
-    });
-    load();
+    const id = item.id_pedido;
+    if (updating[id]) return;
+    ++loadSequence.current;
+    const nextState = item.estado === "entregado" ? "pendiente" : "entregado";
+    setUpdating((current) => ({ ...current, [id]: true }));
+    setRows((current) =>
+      current.map((row) =>
+        row.id_pedido === id ? { ...row, estado: nextState } : row,
+      ),
+    );
+    try {
+      const response = await api.patch(`/pedidos/${id}/estado`, {
+        estado: nextState,
+      });
+      setRows((current) =>
+        current.map((row) =>
+          row.id_pedido === id ? { ...row, ...response.data.data } : row,
+        ),
+      );
+    } catch (error) {
+      setRows((current) =>
+        current.map((row) =>
+          row.id_pedido === id ? { ...row, estado: item.estado } : row,
+        ),
+      );
+      Alert.alert("No se pudo actualizar la entrega", message(error));
+    } finally {
+      setUpdating((current) => ({ ...current, [id]: false }));
+    }
+  };
+  const togglePaid = async (item, value) => {
+    const id = item.id_pedido;
+    if (updating[id]) return;
+    ++loadSequence.current;
+    setUpdating((current) => ({ ...current, [id]: true }));
+    setRows((current) =>
+      current.map((row) =>
+        row.id_pedido === id ? { ...row, pagado: value } : row,
+      ),
+    );
+    try {
+      const response = await api.patch(`/pedidos/${id}/pagado`, {
+        pagado: value,
+      });
+      setRows((current) =>
+        current.map((row) =>
+          row.id_pedido === id
+            ? {
+                ...row,
+                ...response.data.data,
+                pagado:
+                  Number(response.data.data.pagado) === 1 ||
+                  response.data.data.pagado === true,
+              }
+            : row,
+        ),
+      );
+    } catch (error) {
+      setRows((current) =>
+        current.map((row) =>
+          row.id_pedido === id ? { ...row, pagado: !!item.pagado } : row,
+        ),
+      );
+      Alert.alert("No se pudo actualizar el pago", message(error));
+    } finally {
+      setUpdating((current) => ({ ...current, [id]: false }));
+    }
   };
   return (
     <Screen>
@@ -2142,6 +2282,7 @@ export function Pedidos({ navigation }) {
             <View style={s.spaceBetween}>
               <Pressable
                 onPress={() => toggleDelivered(item)}
+                disabled={!!updating[item.id_pedido]}
                 style={[
                   s.deliveryButton,
                   item.estado === "entregado" && s.deliveryActive,
@@ -2170,12 +2311,8 @@ export function Pedidos({ navigation }) {
                 <Switch
                   trackColor={{ true: colors.primary }}
                   value={!!item.pagado}
-                  onValueChange={async (value) => {
-                    await api.patch(`/pedidos/${item.id_pedido}/pagado`, {
-                      pagado: value,
-                    });
-                    load();
-                  }}
+                  disabled={!!updating[item.id_pedido]}
+                  onValueChange={(value) => togglePaid(item, value)}
                 />
               </View>
             </View>
@@ -2251,17 +2388,11 @@ export function Stock() {
   const [selected, setSelected] = useState(null);
   const [quantity, setQuantity] = useState("");
   const [reason, setReason] = useState("");
-  const [restock, setRestock] = useState([]);
   const load = useCallback(
     () =>
-      Promise.all([
-        api.get("/productos", { params: { limit: 100 } }),
-        api.get("/stock/reposicion"),
-      ])
-        .then(([response, suggestions]) => {
-          setRows(response.data.data);
-          setRestock(suggestions.data.data);
-        })
+      api
+        .get("/productos", { params: { all: true } })
+        .then((response) => setRows(response.data.data))
         .catch((error) => Alert.alert("Error", message(error))),
     [],
   );
@@ -2294,10 +2425,10 @@ export function Stock() {
   const pages = usePagination(filtered, `${search}-${order}-${availability}`);
   const setExactStock = async () => {
     const target = Number(quantity.replace(",", "."));
-    if (!Number.isInteger(target))
+    if (!Number.isInteger(target) || target < 0)
       return Alert.alert(
         "Stock inválido",
-        "Ingresa un número entero. El stock puede ser cero o negativo.",
+        "Ingresá un número entero igual o mayor que cero.",
       );
     try {
       await api.post(`/stock/productos/${selected.id_producto}`, {
@@ -2325,22 +2456,6 @@ export function Stock() {
         ListHeaderComponent={
           <>
             <Header title="Stock" subtitle="Control de productos disponibles" />
-            {restock.length ? (
-              <Card style={s.alertPanel}>
-                <Text style={s.alertTitle}>
-                  {restock.length} productos para reponer
-                </Text>
-                <Text style={s.meta}>
-                  La sugerencia considera el mínimo configurado y las ventas
-                  recientes.
-                </Text>
-                {restock.slice(0, 3).map((item) => (
-                  <Text key={item.id_producto} style={s.alertRowText}>
-                    • {item.nombre}: sugerido +{item.sugerido}
-                  </Text>
-                ))}
-              </Card>
-            ) : null}
             <SearchToolbar
               value={search}
               onChange={setSearch}
@@ -2379,15 +2494,7 @@ export function Stock() {
               <View>
                 <Text style={s.cardTitle}>{item.nombre}</Text>
                 <Text style={s.meta}>{item.categoria}</Text>
-                <Text
-                  style={
-                    Number(item.stock_actual) <= Number(item.stock_minimo)
-                      ? s.stockWarning
-                      : s.meta
-                  }
-                >
-                  Mínimo: {item.stock_minimo ?? 5}
-                </Text>
+                <Text style={s.meta}>Stock orientativo</Text>
               </View>
               <View style={s.stockBadge}>
                 <Text style={s.stockNumber}>{item.stock_actual}</Text>
@@ -2425,7 +2532,9 @@ export function Stock() {
           <View style={s.stockStepper}>
             <IconButton
               icon="remove"
-              onPress={() => setQuantity(String(Number(quantity || 0) - 1))}
+              onPress={() =>
+                setQuantity(String(Math.max(0, Number(quantity || 0) - 1)))
+              }
             />
             <Input
               style={{ flex: 1, marginBottom: 0 }}
@@ -2826,8 +2935,8 @@ function LegacyNuevoPedido({ navigation, route }) {
   const [clientBusy, setClientBusy] = useState(false);
   useEffect(() => {
     const requests = [
-      api.get("/clientes", { params: { limit: 100 } }),
-      api.get("/productos", { params: { limit: 100 } }),
+      api.get("/clientes", { params: { all: true } }),
+      api.get("/productos", { params: { all: true } }),
     ];
     if (orderId) requests.push(api.get(`/pedidos/${orderId}`));
     Promise.all(requests).then(([a, b, order]) => {
@@ -3134,6 +3243,7 @@ export function NuevoPedido({ navigation, route }) {
     [state, setState] = useState("pendiente"),
     [discountType, setDiscountType] = useState("porcentaje"),
     [discountValue, setDiscountValue] = useState(""),
+    [initializing, setInitializing] = useState(true),
     [busy, setBusy] = useState(false),
     [clientOpen, setClientOpen] = useState(false),
     [newClient, setNewClient] = useState({
@@ -3145,8 +3255,8 @@ export function NuevoPedido({ navigation, route }) {
     [clientBusy, setClientBusy] = useState(false);
   useEffect(() => {
     const requests = [
-      api.get("/clientes", { params: { limit: 100 } }),
-      api.get("/productos", { params: { limit: 100 } }),
+      api.get("/clientes", { params: { all: true } }),
+      api.get("/productos", { params: { all: true } }),
       api.get("/categorias-productos"),
     ];
     if (orderId) requests.push(api.get(`/pedidos/${orderId}`));
@@ -3159,7 +3269,7 @@ export function NuevoPedido({ navigation, route }) {
           const v = order.data.data;
           setClient(v.id_cliente);
           setDate(String(v.fecha_entrega).slice(0, 10));
-          setPaid(!!v.pagado);
+          setPaid(Number(v.pagado) === 1 || v.pagado === true);
           setPaymentMethod(v.metodo_pago || "efectivo");
           setState(v.estado);
           setDiscountType(v.descuento_tipo || "porcentaje");
@@ -3171,7 +3281,8 @@ export function NuevoPedido({ navigation, route }) {
           );
         }
       })
-      .catch((error) => Alert.alert("Error", message(error)));
+      .catch((error) => Alert.alert("Error", message(error)))
+      .finally(() => setInitializing(false));
   }, [orderId]);
   const filteredClients = clients.filter((i) =>
       i.nombre.toLowerCase().includes(clientSearch.toLowerCase()),
@@ -3224,21 +3335,7 @@ export function NuevoPedido({ navigation, route }) {
       setBusy(false);
     }
   };
-  const save = () => {
-    const shortages = products.filter(
-      (i) => Number(quantities[i.id_producto] || 0) > Number(i.stock_actual),
-    );
-    if (shortages.length)
-      return Alert.alert(
-        "Productos sin stock suficiente",
-        `${shortages.map((i) => `${i.nombre}: disponible ${i.stock_actual}, pedido ${quantities[i.id_producto]}`).join("\n")}\n\nAl crear el pedido, la reserva hará que el stock quede negativo.`,
-        [
-          { text: "Revisar pedido", style: "cancel" },
-          { text: "Crear igualmente", onPress: send },
-        ],
-      );
-    send();
-  };
+  const save = () => send();
   const saveClient = async () => {
     try {
       setClientBusy(true);
@@ -3259,6 +3356,12 @@ export function NuevoPedido({ navigation, route }) {
       setClientBusy(false);
     }
   };
+  if (initializing)
+    return (
+      <Screen>
+        <Loading />
+      </Screen>
+    );
   return (
     <Form title={orderId ? "Editar pedido" : "Nuevo pedido"}>
       <View style={s.spaceBetween}>
@@ -3324,7 +3427,7 @@ export function NuevoPedido({ navigation, route }) {
         <View key={i.id_producto} style={s.productRow}>
           <View style={{ flex: 1 }}>
             <Text style={s.cardTitle}>{i.nombre}</Text>
-            <Text style={[s.meta, i.stock_actual <= 0 && s.stockWarning]}>
+            <Text style={s.meta}>
               {money(i.precio_venta)} · Stock {i.stock_actual}
             </Text>
           </View>
@@ -3491,7 +3594,7 @@ function LegacyNuevaCompra({ navigation }) {
   const [busy, setBusy] = useState(false);
   useEffect(() => {
     api
-      .get("/insumos", { params: { limit: 100 } })
+      .get("/insumos", { params: { all: true } })
       .then((response) => setSupplies(response.data.data));
   }, []);
   const visible = supplies
@@ -3616,7 +3719,7 @@ export function NuevaCompra({ navigation }) {
     });
   const loadSupplies = useCallback(
     () =>
-      api.get("/insumos", { params: { limit: 500 } }).then((r) => {
+      api.get("/insumos", { params: { all: true } }).then((r) => {
         setSupplies(r.data.data);
         return r.data.data;
       }),
@@ -4103,36 +4206,38 @@ export function NuevaCompra({ navigation }) {
                         Crear nuevo
                       </Text>
                     </Pressable>
-                    {supplies
-                      .filter((supply) =>
-                        supply.nombre
-                          .toLowerCase()
-                          .includes(
-                            String(relationSearch[index] || "").toLowerCase(),
-                          ),
-                      )
-                      .slice(0, 12)
-                      .map((supply) => (
-                        <Pressable
-                          key={supply.id_insumo}
-                          onPress={() => chooseSupply(index, supply.id_insumo)}
-                          style={[
-                            s.chip,
-                            item.id_insumo === supply.id_insumo && s.chipActive,
-                          ]}
+                    {relatedSupplyOptions(
+                      item,
+                      supplies,
+                      relationSearch[index] || "",
+                    ).map((supply) => (
+                      <Pressable
+                        key={supply.id_insumo}
+                        onPress={() => chooseSupply(index, supply.id_insumo)}
+                        style={[
+                          s.chip,
+                          item.id_insumo === supply.id_insumo && s.chipActive,
+                        ]}
+                      >
+                        <Text
+                          style={
+                            item.id_insumo === supply.id_insumo
+                              ? s.chipTextActive
+                              : s.chipText
+                          }
                         >
-                          <Text
-                            style={
-                              item.id_insumo === supply.id_insumo
-                                ? s.chipTextActive
-                                : s.chipText
-                            }
-                          >
-                            {supply.nombre}
-                          </Text>
-                        </Pressable>
-                      ))}
+                          {supply.nombre}
+                        </Text>
+                      </Pressable>
+                    ))}
                   </ScrollView>
+                  {!relationSearch[index] &&
+                  !relatedSupplyOptions(item, supplies, "").length ? (
+                    <Text style={s.meta}>
+                      No encontramos insumos con palabras coincidentes. Podés
+                      crear uno nuevo o escribir una búsqueda.
+                    </Text>
+                  ) : null}
                   {!item.id_insumo ? (
                     <Text style={s.stockWarning}>
                       Se creará un insumo nuevo con el nombre revisado.
@@ -4296,7 +4401,7 @@ export function Calculadora({ navigation }) {
   const loadSupplies = useCallback(
     () =>
       api
-        .get("/insumos", { params: { limit: 100 } })
+        .get("/insumos", { params: { all: true } })
         .then((response) => setRows(response.data.data)),
     [],
   );
@@ -5233,6 +5338,7 @@ export function Informes() {
     [from, setFrom] = useState(""),
     [to, setTo] = useState(""),
     [status, setStatus] = useState(""),
+    [paidFilter, setPaidFilter] = useState(""),
     [loading, setLoading] = useState(false);
   const load = useCallback(() => {
     setLoading(true);
@@ -5243,22 +5349,32 @@ export function Informes() {
           desde: from,
           hasta: to,
           estado: status || undefined,
+          pagado: paidFilter || undefined,
         },
       })
       .then((r) => setData(r.data.data))
       .catch((error) => Alert.alert("No se pudo cargar", message(error)))
       .finally(() => setLoading(false));
-  }, [search, from, to, status]);
+  }, [search, from, to, status, paidFilter]);
   useFocusEffect(
     useCallback(() => {
       load();
     }, [load]),
   );
-  const rows = mode === "pedidos" ? data?.pedidos || [] : data?.compras || [],
-    pages = usePagination(rows, `${mode}-${search}-${from}-${to}-${status}`);
+  const rows =
+      mode === "pedidos"
+        ? data?.pedidos || []
+        : mode === "compras"
+          ? data?.compras || []
+          : data?.viandas || [],
+    pages = usePagination(
+      rows,
+      `${mode}-${search}-${from}-${to}-${status}-${paidFilter}`,
+    );
   const exportExcel = async () => {
     try {
       const isOrders = mode === "pedidos";
+      const isMeals = mode === "viandas";
       const headers = isOrders
         ? [
             "Pedido",
@@ -5275,19 +5391,41 @@ export function Informes() {
             "Descuento",
             "Total pedido",
           ]
-        : [
-            "Compra",
-            "Fecha compra",
-            "Proveedor",
-            "Método de pago",
-            "Insumo",
-            "Cantidad",
-            "Precio unitario",
-            "Subtotal ítem",
-            "Subtotal compra",
-            "Descuento",
-            "Total compra",
-          ];
+        : isMeals
+          ? [
+              "Vianda",
+              "Fecha entrega",
+              "Hora",
+              "Cliente",
+              "Tipo",
+              "Cantidad",
+              "Postre",
+              "Envío",
+              "Frecuencia",
+              "Estado",
+              "Pagado",
+              "Método de pago",
+              "Precio unitario",
+              "Adicional postre",
+              "Costo envío",
+              "Subtotal",
+              "Descuento",
+              "Total",
+              "Observaciones",
+            ]
+          : [
+              "Compra",
+              "Fecha compra",
+              "Proveedor",
+              "Método de pago",
+              "Insumo",
+              "Cantidad",
+              "Precio unitario",
+              "Subtotal ítem",
+              "Subtotal compra",
+              "Descuento",
+              "Total compra",
+            ];
       const detailRows = rows.flatMap((operation) => {
         const items = operation.items?.length ? operation.items : [{}];
         return items.map((item) =>
@@ -5307,34 +5445,56 @@ export function Informes() {
                 Number(operation.descuento_importe || 0),
                 Number(operation.total || 0),
               ]
-            : [
-                operation.id_compra,
-                String(operation.fecha_compra).slice(0, 10),
-                operation.proveedor,
-                operation.metodo_pago || "efectivo",
-                item.insumo_nombre || "Sin detalle",
-                Number(item.cantidad || 0),
-                Number(item.precio_unitario || 0),
-                Number(item.subtotal || 0),
-                Number(operation.subtotal || 0),
-                Number(operation.descuento_importe || 0),
-                Number(operation.total || 0),
-              ],
+            : isMeals
+              ? [
+                  operation.id_pedido_vianda,
+                  String(operation.fecha_entrega).slice(0, 10),
+                  String(operation.hora_entrega).slice(0, 5),
+                  operation.cliente_nombre,
+                  operation.tipo_nombre,
+                  Number(operation.cantidad || 0),
+                  operation.con_postre ? "Sí" : "No",
+                  operation.con_envio ? "Sí" : "No",
+                  operation.frecuencia,
+                  operation.estado,
+                  operation.pagado ? "Sí" : "No",
+                  operation.metodo_pago || "efectivo",
+                  Number(operation.precio_unitario || 0),
+                  Number(operation.precio_postre_unitario || 0),
+                  Number(operation.costo_envio || 0),
+                  Number(operation.subtotal || 0),
+                  Number(operation.descuento_importe || 0),
+                  Number(operation.total || 0),
+                  operation.observaciones || "",
+                ]
+              : [
+                  operation.id_compra,
+                  String(operation.fecha_compra).slice(0, 10),
+                  operation.proveedor,
+                  operation.metodo_pago || "efectivo",
+                  item.insumo_nombre || "Sin detalle",
+                  Number(item.cantidad || 0),
+                  Number(item.precio_unitario || 0),
+                  Number(item.subtotal || 0),
+                  Number(operation.subtotal || 0),
+                  Number(operation.descuento_importe || 0),
+                  Number(operation.total || 0),
+                ],
         );
       });
-      const filterDescription = `Desde: ${from || "sin límite"} | Hasta: ${to || "sin límite"} | Búsqueda: ${search || "todas"}${isOrders ? ` | Estado: ${status || "todos"}` : ""}`;
+      const filterDescription = `Desde: ${from || "sin límite"} | Hasta: ${to || "sin límite"} | Búsqueda: ${search || "todas"}${isOrders || isMeals ? ` | Estado: ${status || "todos"} | Cobro: ${paidFilter === "true" ? "pagados" : paidFilter === "false" ? "sin cobrar" : "todos"}` : ""}`;
       const reportTotal = rows.reduce(
         (sum, operation) => sum + Number(operation.total || 0),
         0,
       );
       const totalRow = [
-        `TOTAL ${isOrders ? "PEDIDOS" : "COMPRAS"} (${rows.length} operaciones)`,
+        `TOTAL ${isOrders ? "PEDIDOS" : isMeals ? "VIANDAS" : "COMPRAS"} (${rows.length} operaciones)`,
         ...Array(headers.length - 2).fill(""),
         reportTotal,
       ];
       const sheetData = [
         [
-          `Ciento Once · Informe detallado de ${isOrders ? "pedidos" : "compras"}`,
+          `Ciento Once · Informe detallado de ${isOrders ? "pedidos" : isMeals ? "viandas" : "compras"}`,
         ],
         [filterDescription],
         [],
@@ -5390,7 +5550,11 @@ export function Informes() {
             fill: { fgColor: { rgb: row % 2 ? "F5FBF7" : "FFFFFF" } },
             border: { bottom: { style: "hair", color: { rgb: "D7E5DB" } } },
           };
-          if ((isOrders && column >= 8) || (!isOrders && column >= 6))
+          if (
+            (isOrders && column >= 8) ||
+            (isMeals && column >= 12 && column <= 17) ||
+            (!isOrders && !isMeals && column >= 6)
+          )
             cell.z = "$#,##0.00";
         }
       const totalIndex = sheetData.length - 1;
@@ -5407,7 +5571,11 @@ export function Informes() {
       totalLabelCell.s = totalStyle;
       totalValueCell.s = totalStyle;
       totalValueCell.z = "$#,##0.00";
-      XLSX.utils.book_append_sheet(wb, ws, isOrders ? "Pedidos" : "Compras");
+      XLSX.utils.book_append_sheet(
+        wb,
+        ws,
+        isOrders ? "Pedidos" : isMeals ? "Viandas" : "Compras",
+      );
       const base64 = XLSX.write(wb, { type: "base64", bookType: "xlsx" }),
         uri = `${FileSystem.cacheDirectory}informe-${mode}-ciento-once-${new Date().toISOString().slice(0, 10)}.xlsx`;
       await FileSystem.writeAsStringAsync(uri, base64, {
@@ -5430,7 +5598,13 @@ export function Informes() {
         contentContainerStyle={s.page}
         data={pages.visible}
         keyExtractor={(i) =>
-          String(mode === "pedidos" ? i.id_pedido : i.id_compra)
+          String(
+            mode === "pedidos"
+              ? i.id_pedido
+              : mode === "viandas"
+                ? i.id_pedido_vianda
+                : i.id_compra,
+          )
         }
         ListHeaderComponent={
           <>
@@ -5457,26 +5631,51 @@ export function Informes() {
               <DateField value={from} onChange={setFrom} />
               <Text style={s.meta}>Hasta</Text>
               <DateField value={to} onChange={setTo} />
-              {mode === "pedidos" ? (
-                <View style={s.chips}>
-                  {[
-                    ["", "Todos"],
-                    ["pendiente", "Pendientes"],
-                    ["entregado", "Entregados"],
-                  ].map(([v, l]) => (
-                    <Pressable
-                      key={l}
-                      onPress={() => setStatus(v)}
-                      style={[s.chip, status === v && s.chipActive]}
-                    >
-                      <Text
-                        style={status === v ? s.chipTextActive : s.chipText}
+              {mode !== "compras" ? (
+                <>
+                  <Text style={s.meta}>Estado</Text>
+                  <View style={s.chips}>
+                    {[
+                      ["", "Todos"],
+                      ["pendiente", "Pendientes"],
+                      ["entregado", "Entregados"],
+                    ].map(([v, l]) => (
+                      <Pressable
+                        key={l}
+                        onPress={() => setStatus(v)}
+                        style={[s.chip, status === v && s.chipActive]}
                       >
-                        {l}
-                      </Text>
-                    </Pressable>
-                  ))}
-                </View>
+                        <Text
+                          style={status === v ? s.chipTextActive : s.chipText}
+                        >
+                          {l}
+                        </Text>
+                      </Pressable>
+                    ))}
+                  </View>
+                  <Text style={s.meta}>Cobro</Text>
+                  <View style={s.chips}>
+                    {[
+                      ["", "Todos"],
+                      ["false", "Sin cobrar"],
+                      ["true", "Pagados"],
+                    ].map(([v, l]) => (
+                      <Pressable
+                        key={l}
+                        onPress={() => setPaidFilter(v)}
+                        style={[s.chip, paidFilter === v && s.chipActive]}
+                      >
+                        <Text
+                          style={
+                            paidFilter === v ? s.chipTextActive : s.chipText
+                          }
+                        >
+                          {l}
+                        </Text>
+                      </Pressable>
+                    ))}
+                  </View>
+                </>
               ) : null}
               <Button
                 compact
@@ -5517,6 +5716,18 @@ export function Informes() {
                   Compras
                 </Text>
               </Pressable>
+              <Pressable
+                onPress={() => setMode("viandas")}
+                style={[s.segmentButton, mode === "viandas" && s.segmentActive]}
+              >
+                <Text
+                  style={
+                    mode === "viandas" ? s.segmentTextActive : s.segmentText
+                  }
+                >
+                  Viandas
+                </Text>
+              </Pressable>
             </View>
           </>
         }
@@ -5531,15 +5742,15 @@ export function Informes() {
           <Card>
             <View style={s.spaceBetween}>
               <Text style={s.cardTitle}>
-                {mode === "pedidos" ? item.cliente_nombre : item.proveedor}
+                {mode === "compras" ? item.proveedor : item.cliente_nombre}
               </Text>
               <Text style={s.amount}>{money(item.total)}</Text>
             </View>
             <Text style={s.meta}>
               {String(
-                mode === "pedidos" ? item.fecha_entrega : item.fecha_compra,
+                mode === "compras" ? item.fecha_compra : item.fecha_entrega,
               ).slice(0, 10)}{" "}
-              · {mode === "pedidos" ? item.estado : "Compra"}
+              · {mode === "compras" ? "Compra" : item.estado}
             </Text>
             <Text style={s.meta}>{item.detalle || "Sin detalle"}</Text>
             {Number(item.descuento_importe) > 0 ? (
@@ -5579,9 +5790,14 @@ export function Informes() {
               <PieChart
                 values={[
                   {
-                    label: "Ventas entregadas",
-                    value: data?.resumen?.ventas,
+                    label: "Pedidos entregados",
+                    value: data?.resumen?.ventas_pedidos,
                     color: colors.primary,
+                  },
+                  {
+                    label: "Viandas entregadas",
+                    value: data?.resumen?.ventas_viandas,
+                    color: "#5A8DEE",
                   },
                   {
                     label: "Compras",
@@ -5693,7 +5909,7 @@ export function PoliticaPrivacidad() {
     ],
     [
       "Datos utilizados",
-      "La aplicación trata datos de cuenta y los datos comerciales que cada negocio carga: empleados, clientes, teléfonos, domicilios, ubicaciones, productos, insumos, stock, pedidos, compras, caja, costos e informes.",
+      "La aplicación trata datos de cuenta y los datos comerciales que cada negocio carga: empleados, clientes, teléfonos, domicilios, ubicaciones, productos, insumos, stock, pedidos, reservas de viandas, compras, caja, costos e informes.",
     ],
     [
       "Ubicación, imágenes e IA",
@@ -6225,7 +6441,7 @@ export function Flyers() {
   const load = useCallback(
     () =>
       api
-        .get("/productos", { params: { limit: 100 } })
+        .get("/productos", { params: { all: true } })
         .then((r) => setProducts(r.data.data)),
     [],
   );

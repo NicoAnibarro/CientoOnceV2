@@ -1,6 +1,6 @@
 # Ciento Once V2
 
-Aplicación móvil para gestionar clientes, productos, pedidos, stock, insumos, compras y caja. Cada consulta operativa se limita al usuario obtenido del JWT.
+Aplicación móvil para gestionar clientes, productos, pedidos, viandas recurrentes, rutas de reparto, stock orientativo, insumos, compras, caja e informes. Cada consulta operativa se limita al usuario obtenido del JWT.
 
 ## Requisitos
 
@@ -66,7 +66,7 @@ Abrir Expo Go y escanear el QR. Si Windows pregunta, permitir Node en redes priv
 
 ## Seguridad y pruebas principales
 
-La API recalcula totales y precios, usa parámetros SQL y toma `id_usuario` exclusivamente del JWT. Pedidos, edición y eliminación restauran/descuentan stock dentro de transacciones. Caja usa una clave única por usuario/origen/ID para no duplicar pagos.
+La API recalcula totales y precios, usa parámetros SQL y toma `id_usuario` exclusivamente del JWT. Pedidos, edición y eliminación restauran/descuentan el stock disponible dentro de transacciones, sin permitir valores negativos. Caja usa una clave única por usuario/origen/ID para no duplicar pagos, incluidos los cobros de viandas.
 
 Prueba recomendada con cuentas A y B: crear un producto, cliente y pedido como A; iniciar como B y confirmar que no aparecen. Consultar o editar con B el ID de A debe devolver 404. Como A, activar/desactivar/activar pago y verificar un solo movimiento en caja. Registrar compra y confirmar el egreso y balance.
 
@@ -75,6 +75,7 @@ Prueba recomendada con cuentas A y B: crear un producto, cliente y pedido como A
 - Backend desarrollo: `npm.cmd run dev`
 - Backend producción/local: `npm.cmd start`
 - Sintaxis backend: `npm.cmd run check`
+- Integración aislada (requiere MySQL local): `npm.cmd run test:isolated`
 - Expo: `npx.cmd expo start`
 - Diagnóstico Expo: `npx.cmd expo-doctor`
 
@@ -112,5 +113,7 @@ npm.cmd run db:import
 ```
 
 El comando utiliza las variables `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_INITIAL_DATABASE` y `DB_SSL`. La contraseña debe proporcionarse temporalmente mediante el entorno y eliminarse al terminar.
+
+Las bases existentes se actualizan con `npm.cmd run db:migrate:production`, únicamente después de respaldarlas y verificar que las variables apuntan al servicio exclusivo de Ciento Once. El script de limpieza comercial exige además los dos seguros explícitos `ALLOW_PRODUCTION_CLEANUP=YES` y `CLEANUP_TARGET=CientoOnceV2`; nunca debe ejecutarse contra una base compartida con otra aplicación.
 
 Las instancias gratuitas de Render pueden suspenderse por inactividad; la primera solicitud posterior puede demorar mientras el servicio despierta.
