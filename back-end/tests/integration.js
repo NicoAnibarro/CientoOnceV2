@@ -3,6 +3,70 @@ const assert = require("node:assert/strict");
 const app = require("../src/app");
 const db = require("../src/config/db");
 
+async function assertAccountingInvariants(userId) {
+  const checks = [
+    [
+      `SELECT COUNT(*) invalidos FROM pedidos p
+       LEFT JOIN movimientos_caja m ON m.id_usuario=p.id_usuario AND m.origen='pedido'
+        AND m.origen_id=p.id_pedido AND m.anulado=0
+       WHERE p.id_usuario=? AND p.activo=1 AND (
+        (p.pagado=1 AND p.estado<>'cancelado' AND
+          (m.id_movimiento_caja IS NULL OR m.tipo<>'ingreso' OR ABS(m.monto-p.total)>0.004))
+        OR ((p.pagado=0 OR p.estado='cancelado') AND m.id_movimiento_caja IS NOT NULL))`,
+      "pedidos/caja",
+    ],
+    [
+      `SELECT COUNT(*) invalidos FROM compras c
+       LEFT JOIN movimientos_caja m ON m.id_usuario=c.id_usuario AND m.origen='compra'
+        AND m.origen_id=c.id_compra AND m.anulado=0
+       WHERE c.id_usuario=? AND c.activo=1 AND
+        (m.id_movimiento_caja IS NULL OR m.tipo<>'egreso' OR ABS(m.monto-c.total)>0.004)`,
+      "compras/caja",
+    ],
+    [
+      `SELECT COUNT(*) invalidos FROM pedidos_viandas v
+       LEFT JOIN pagos_viandas pv ON pv.id_usuario=v.id_usuario
+        AND pv.id_pedido_vianda=v.id_pedido_vianda AND pv.activo=1
+       LEFT JOIN movimientos_caja m ON m.id_usuario=v.id_usuario AND m.origen='vianda'
+        AND m.origen_id=pv.id_pago_vianda AND m.anulado=0
+       WHERE v.id_usuario=? AND v.activo=1 AND (
+        (v.pagado=1 AND v.estado<>'cancelado' AND v.total>0 AND
+          (pv.id_pago_vianda IS NULL OR m.id_movimiento_caja IS NULL OR
+           ABS(pv.monto-v.total)>0.004 OR ABS(m.monto-v.total)>0.004))
+        OR ((v.pagado=0 OR v.estado='cancelado') AND
+          (pv.id_pago_vianda IS NOT NULL OR m.id_movimiento_caja IS NOT NULL)))`,
+      "viandas/caja",
+    ],
+    [
+      `SELECT COUNT(*) invalidos FROM series_viandas s
+       LEFT JOIN (
+        SELECT id_serie,SUM(total) total FROM pedidos_viandas
+        WHERE id_usuario=? AND activo=1 GROUP BY id_serie
+       ) vt ON vt.id_serie=s.id_serie
+       LEFT JOIN (
+        SELECT id_serie,SUM(monto) cobrado FROM pagos_viandas
+        WHERE id_usuario=? AND activo=1 GROUP BY id_serie
+       ) pt ON pt.id_serie=s.id_serie
+       WHERE s.id_usuario=? AND s.activo=1 AND
+        (ABS(s.total_plan-COALESCE(vt.total,0))>0.004 OR
+         ABS(s.monto_pagado-COALESCE(pt.cobrado,0))>0.004 OR
+         s.pagado<>(CASE WHEN COALESCE(vt.total,0)<=0 OR
+          COALESCE(pt.cobrado,0)+0.005>=COALESCE(vt.total,0) THEN 1 ELSE 0 END))`,
+      "totales de series",
+      3,
+    ],
+    [
+      "SELECT COUNT(*) invalidos FROM productos WHERE id_usuario=? AND stock_actual<0",
+      "stock negativo",
+    ],
+  ];
+  for (const [sql, label, repetitions = 1] of checks) {
+    const params = Array.from({ length: repetitions }, () => userId);
+    const [[row]] = await db.query(sql, params);
+    assert.equal(Number(row.invalidos), 0, `Invariante fallida: ${label}`);
+  }
+}
+
 async function run() {
   const server = app.listen(0, "127.0.0.1");
   await new Promise((resolve) => server.once("listening", resolve));
@@ -10,6 +74,7 @@ async function run() {
   const stamp = Date.now();
   let tokenA;
   let tokenB;
+  let userIdA;
 
   async function request(path, { method = "GET", token, body } = {}) {
     const response = await fetch(base + path, {
@@ -75,6 +140,7 @@ async function run() {
     assert.equal(response.status, 401);
     response = await request("/auth/me", { token: tokenA });
     assert.equal(response.status, 200);
+    userIdA = response.json.data.id_usuario;
     response = await request("/configuracion-comercial/paleta-app", {
       method: "PATCH",
       token: tokenA,
@@ -322,17 +388,27 @@ async function run() {
       body: { estado: "cancelado" },
     });
     assert.equal(response.status, 200);
+    assert.equal(Number(response.json.data.pagado), 0);
     response = await request("/productos", { token: tokenA });
     assert.equal(
       response.json.data.find((p) => p.id_producto === idProducto).stock_actual,
       2,
     );
+    response = await request("/caja/resumen", { token: tokenA });
+    assert.equal(response.json.data.ingresos, 0);
+    response = await request(`/pedidos/${idPedido}/pagado`, {
+      method: "PATCH",
+      token: tokenA,
+      body: { pagado: true },
+    });
+    assert.equal(response.status, 409);
     response = await request(`/pedidos/${idPedido}/estado`, {
       method: "PATCH",
       token: tokenA,
       body: { estado: "entregado" },
     });
     assert.equal(response.status, 200);
+    assert.equal(Number(response.json.data.pagado), 0);
     response = await request("/productos", { token: tokenA });
     assert.equal(
       response.json.data.find((p) => p.id_producto === idProducto).stock_actual,
@@ -469,7 +545,6 @@ async function run() {
         dias_semana: [1, 2, 3, 4, 5],
         hora_entrega: "12:30",
         pagado: false,
-        pago_inicial: 10000,
         metodo_pago: "transferencia",
         estado: "pendiente",
         observaciones: "Sin cebolla",
@@ -478,8 +553,8 @@ async function run() {
     assert.equal(response.status, 201, JSON.stringify(response.json));
     assert.equal(response.json.data.cantidad_entregas, 23);
     assert.equal(Number(response.json.data.total_plan), 402500);
-    assert.equal(Number(response.json.data.monto_pagado), 10000);
-    assert.equal(Number(response.json.data.saldo_pendiente), 392500);
+    assert.equal(Number(response.json.data.monto_pagado), 0);
+    assert.equal(Number(response.json.data.saldo_pendiente), 402500);
     const viandaIds = response.json.data.pedidos;
     response = await request(
       "/viandas?desde=2026-10-25&hasta=2026-11-25&limit=2",
@@ -490,11 +565,17 @@ async function run() {
     assert.equal(response.json.meta.total, 23);
     assert.equal(Number(response.json.data[0].total), 17500);
     assert.equal(response.json.data[0].items.length, 2);
-    response = await request("/viandas/clientes?vista=todas", { token: tokenA });
+    response = await request("/viandas/clientes?vista=todas", {
+      token: tokenA,
+    });
     assert.equal(response.status, 200, JSON.stringify(response.json));
     assert.equal(response.json.data.length, 1);
-    assert.equal(Number(response.json.data[0].saldo_pendiente), 392500);
-    response = await request(`/viandas/clientes/${idCliente}`, { token: tokenA });
+    assert.equal(Number(response.json.data[0].total_planes), 402500);
+    assert.equal(Number(response.json.data[0].cobrado_total), 0);
+    assert.equal(Number(response.json.data[0].saldo_pendiente), 402500);
+    response = await request(`/viandas/clientes/${idCliente}`, {
+      token: tokenA,
+    });
     assert.equal(response.status, 200, JSON.stringify(response.json));
     assert.equal(response.json.data.series.length, 1);
     assert.equal(response.json.data.series[0].entregas.length, 23);
@@ -517,36 +598,138 @@ async function run() {
       body: { estado: "entregado" },
     });
     assert.equal(response.status, 200, JSON.stringify(response.json));
-    response = await request(`/viandas/${viandaIds[0]}/pago-dia`, {
-      method: "POST",
+    for (const id of viandaIds.slice(0, 5)) {
+      response = await request(`/viandas/${id}/pagado`, {
+        method: "PATCH",
+        token: tokenA,
+        body: {
+          pagado: true,
+          metodo_pago: "efectivo",
+          fecha_pago: "2026-10-26",
+        },
+      });
+      assert.equal(response.status, 200, JSON.stringify(response.json));
+    }
+    response = await request(`/viandas/clientes/${idCliente}`, {
       token: tokenA,
-      body: { metodo_pago: "efectivo", fecha_pago: "2026-10-26" },
     });
-    assert.equal(response.status, 201, JSON.stringify(response.json));
-    assert.equal(Number(response.json.data.payment.monto), 17500);
-    assert.equal(Number(response.json.data.series.monto_pagado), 27500);
-    response = await request(`/viandas/${viandaIds[0]}/pago-dia`, {
-      method: "POST",
-      token: tokenA,
-      body: { metodo_pago: "efectivo", fecha_pago: "2026-10-26" },
-    });
-    assert.equal(response.status, 409, JSON.stringify(response.json));
+    assert.equal(Number(response.json.data.series[0].monto_pagado), 87500);
     response = await request("/caja/resumen", { token: tokenA });
-    assert.equal(response.json.data.ingresos, 32500);
+    assert.equal(response.json.data.ingresos, 92500);
     assert.equal(response.json.data.egresos, 3400);
-    assert.equal(response.json.data.balance, 29100);
+    assert.equal(response.json.data.balance, 89100);
+
+    response = await request(`/viandas/${viandaIds[2]}/pagado`, {
+      method: "PATCH",
+      token: tokenA,
+      body: { pagado: false, metodo_pago: "efectivo" },
+    });
+    assert.equal(response.status, 200, JSON.stringify(response.json));
+    assert.equal(Number(response.json.data.series.monto_pagado), 70000);
+    response = await request("/caja/resumen", { token: tokenA });
+    assert.equal(response.json.data.ingresos, 75000);
+    response = await request(`/viandas/${viandaIds[2]}/pagado`, {
+      method: "PATCH",
+      token: tokenA,
+      body: { pagado: true, metodo_pago: "efectivo" },
+    });
+    assert.equal(response.status, 200, JSON.stringify(response.json));
+    assert.equal(Number(response.json.data.series.monto_pagado), 87500);
+    response = await request("/caja/resumen", { token: tokenA });
+    assert.equal(response.json.data.ingresos, 92500);
+
+    response = await request(`/viandas/${viandaIds[0]}/estado`, {
+      method: "PATCH",
+      token: tokenA,
+      body: { estado: "pendiente" },
+    });
+    assert.equal(response.status, 200, JSON.stringify(response.json));
+    response = await request("/caja/resumen", { token: tokenA });
+    assert.equal(response.json.data.ingresos, 92500);
     response = await request(
       "/informes?buscar=Cliente&desde=2026-10-25&hasta=2026-11-25",
       { token: tokenA },
     );
     assert.equal(response.status, 200, JSON.stringify(response.json));
     assert.equal(response.json.data.viandas.length, 23);
-    assert.equal(response.json.data.resumen.ventas_viandas, 17500);
+    assert.equal(response.json.data.resumen.ventas_viandas, 0);
     response = await request(`/viandas/${viandaIds[1]}/desactivar`, {
       method: "PATCH",
       token: tokenA,
     });
     assert.equal(response.status, 200, JSON.stringify(response.json));
+    response = await request("/caja/resumen", { token: tokenA });
+    assert.equal(response.json.data.ingresos, 75000);
+
+    response = await request("/viandas", {
+      method: "POST",
+      token: tokenA,
+      body: {
+        id_cliente: idCliente,
+        items: [
+          {
+            id_tipo_vianda: idTipoVianda,
+            cantidad: 1,
+            precio_unitario: 8000,
+            con_postre: false,
+          },
+        ],
+        frecuencia: "diario",
+        fecha_inicio: "2026-11-26",
+        fecha_fin: "2026-11-27",
+        dias_semana: [1, 2, 3, 4, 5],
+        hora_entrega: "12:30",
+        pagado: true,
+        metodo_pago: "transferencia",
+        estado: "pendiente",
+      },
+    });
+    assert.equal(response.status, 201, JSON.stringify(response.json));
+    assert.equal(response.json.data.cantidad_entregas, 2);
+    assert.equal(Number(response.json.data.monto_pagado), 16000);
+    const paidViandaIds = response.json.data.pedidos;
+    response = await request("/caja/resumen", { token: tokenA });
+    assert.equal(response.json.data.ingresos, 91000);
+    response = await request(`/viandas/${paidViandaIds[0]}/estado`, {
+      method: "PATCH",
+      token: tokenA,
+      body: { estado: "entregado" },
+    });
+    assert.equal(response.status, 200);
+    response = await request("/caja/resumen", { token: tokenA });
+    assert.equal(response.json.data.ingresos, 91000);
+    response = await request(`/viandas/${paidViandaIds[0]}/pagado`, {
+      method: "PATCH",
+      token: tokenA,
+      body: { pagado: false },
+    });
+    assert.equal(response.status, 200);
+    response = await request("/caja/resumen", { token: tokenA });
+    assert.equal(response.json.data.ingresos, 83000);
+    response = await request(`/viandas/${paidViandaIds[0]}/pagado`, {
+      method: "PATCH",
+      token: tokenA,
+      body: { pagado: true, metodo_pago: "transferencia" },
+    });
+    assert.equal(response.status, 200);
+    response = await request(`/viandas/${paidViandaIds[0]}/estado`, {
+      method: "PATCH",
+      token: tokenA,
+      body: { estado: "cancelado" },
+    });
+    assert.equal(response.status, 200);
+    assert.equal(Number(response.json.data.pagado), 0);
+    response = await request("/caja/resumen", { token: tokenA });
+    assert.equal(response.json.data.ingresos, 83000);
+    response = await request(`/viandas/${paidViandaIds[0]}/estado`, {
+      method: "PATCH",
+      token: tokenA,
+      body: { estado: "pendiente" },
+    });
+    assert.equal(response.status, 200);
+    assert.equal(Number(response.json.data.pagado), 0);
+
+    await assertAccountingInvariants(userIdA);
 
     response = await request("/costos-productos", {
       method: "POST",

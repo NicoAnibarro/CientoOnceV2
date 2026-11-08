@@ -35,6 +35,10 @@ function metodoPago(value) {
     : "efectivo";
 }
 
+function valorBooleano(value) {
+  return value === true || value === 1 || value === "1";
+}
+
 async function cajaPedido(
   connection,
   userId,
@@ -48,7 +52,7 @@ async function cajaPedido(
       `INSERT INTO movimientos_caja
       (id_usuario,tipo,categoria,concepto,monto,metodo_pago,origen,origen_id,anulado)
       VALUES(?,'ingreso','pedido',?,?,?,'pedido',?,0)
-      ON DUPLICATE KEY UPDATE monto=VALUES(monto),metodo_pago=VALUES(metodo_pago),anulado=0,fecha_movimiento=NOW()`,
+      ON CONFLICT (id_usuario,origen,origen_id) DO UPDATE SET monto=EXCLUDED.monto,metodo_pago=EXCLUDED.metodo_pago,anulado=0,fecha_movimiento=NOW()`,
       [
         userId,
         `Pago de pedido #${orderId}`,
@@ -150,7 +154,10 @@ async function crearDetalles(connection, userId, orderId, items) {
       status: 400,
     });
   let total = 0;
-  for (const item of items) {
+  const orderedItems = [...items].sort(
+    (left, right) => Number(left.id_producto) - Number(right.id_producto),
+  );
+  for (const item of orderedItems) {
     const quantity = entero(Number(item.cantidad));
     if (!quantity || quantity < 1)
       throw Object.assign(new Error("Cantidad inválida"), { status: 400 });
@@ -200,7 +207,7 @@ exports.listarPedidos = async (req, res) => {
       ? `p.estado='entregado' ASC, CASE WHEN p.estado='entregado' THEN p.fecha_entrega END DESC, CASE WHEN p.estado<>'entregado' THEN p.fecha_entrega END ASC`
       : `p.fecha_entrega ${direction}`;
   const [rows] = await db.query(
-    `SELECT p.*,(SELECT GROUP_CONCAT(CONCAT(producto_nombre,' x',cantidad) SEPARATOR ', ') FROM pedido_detalles d WHERE d.id_pedido=p.id_pedido) detalle_resumido FROM pedidos p WHERE ${where} ORDER BY ${order}`,
+    `SELECT p.*,(SELECT STRING_AGG(CONCAT(producto_nombre,' x',cantidad), ', ') FROM pedido_detalles d WHERE d.id_pedido=p.id_pedido) detalle_resumido FROM pedidos p WHERE ${where} ORDER BY ${order}`,
     args,
   );
   res.json({ ok: true, data: rows });
@@ -236,10 +243,11 @@ exports.crearPedido = async (req, res) => {
     if (!client)
       throw Object.assign(new Error("Cliente no encontrado"), { status: 404 });
     const state = req.body.estado === "entregado" ? "entregado" : "pendiente";
+    const paid = valorBooleano(req.body.pagado);
     const [result] = await connection.query(
       `INSERT INTO pedidos
       (id_usuario,id_cliente,cliente_nombre,cliente_telefono,cliente_direccion,fecha_entrega,estado,pagado,fecha_pago,metodo_pago,pago_detalle_json,total,observaciones)
-      VALUES(?,?,?,?,?,?,?,?,IF(?=1,NOW(),NULL),?,?,0,?)`,
+      VALUES(?,?,?,?,?,?,?,?,CASE WHEN ?=1 THEN NOW() ELSE NULL END,?,?,0,?)`,
       [
         userId,
         client.id_cliente,
@@ -248,8 +256,8 @@ exports.crearPedido = async (req, res) => {
         client.direccion,
         req.body.fecha_entrega,
         state,
-        req.body.pagado ? 1 : 0,
-        req.body.pagado ? 1 : 0,
+        paid ? 1 : 0,
+        paid ? 1 : 0,
         metodoPago(req.body.metodo_pago),
         req.body.pago_detalle ? JSON.stringify(req.body.pago_detalle) : null,
         req.body.observaciones || null,
@@ -280,17 +288,15 @@ exports.crearPedido = async (req, res) => {
       userId,
       result.insertId,
       discount.total,
-      req.body.pagado,
+      paid,
       req.body.metodo_pago,
     );
     await connection.commit();
-    res
-      .status(201)
-      .json({
-        ok: true,
-        mensaje: "Pedido creado",
-        data: { id_pedido: result.insertId, total: discount.total },
-      });
+    res.status(201).json({
+      ok: true,
+      mensaje: "Pedido creado",
+      data: { id_pedido: result.insertId, total: discount.total },
+    });
   } catch (error) {
     await connection.rollback();
     throw error;
@@ -338,8 +344,9 @@ exports.editarPedido = async (req, res) => {
     const discount = calcularDescuento(subtotal, req.body);
     if (state !== "cancelado")
       await descontarStock(connection, userId, orderId);
+    const paid = state === "cancelado" ? false : valorBooleano(req.body.pagado);
     await connection.query(
-      `UPDATE pedidos SET id_cliente=?,cliente_nombre=?,cliente_telefono=?,cliente_direccion=?,fecha_entrega=?,estado=?,pagado=?,fecha_pago=IF(?=1,COALESCE(fecha_pago,NOW()),NULL),metodo_pago=?,pago_detalle_json=?,subtotal=?,descuento_tipo=?,descuento_valor=?,descuento_importe=?,total=?,observaciones=? WHERE id_pedido=? AND id_usuario=?`,
+      `UPDATE pedidos SET id_cliente=?,cliente_nombre=?,cliente_telefono=?,cliente_direccion=?,fecha_entrega=?,estado=?,pagado=?,fecha_pago=CASE WHEN ?=1 THEN COALESCE(fecha_pago,NOW()) ELSE NULL END,metodo_pago=?,pago_detalle_json=?,subtotal=?,descuento_tipo=?,descuento_valor=?,descuento_importe=?,total=?,observaciones=? WHERE id_pedido=? AND id_usuario=?`,
       [
         client.id_cliente,
         client.nombre,
@@ -347,8 +354,8 @@ exports.editarPedido = async (req, res) => {
         client.direccion,
         req.body.fecha_entrega,
         state,
-        req.body.pagado ? 1 : 0,
-        req.body.pagado ? 1 : 0,
+        paid ? 1 : 0,
+        paid ? 1 : 0,
         metodoPago(req.body.metodo_pago),
         req.body.pago_detalle ? JSON.stringify(req.body.pago_detalle) : null,
         subtotal,
@@ -366,7 +373,7 @@ exports.editarPedido = async (req, res) => {
       userId,
       orderId,
       discount.total,
-      req.body.pagado,
+      paid,
       req.body.metodo_pago,
     );
     await connection.commit();
@@ -392,7 +399,7 @@ exports.estado = async (req, res) => {
     const userId = req.usuario.id_usuario;
     const orderId = req.params.id;
     const [[order]] = await connection.query(
-      "SELECT estado FROM pedidos WHERE id_pedido=? AND id_usuario=? AND activo=1 FOR UPDATE",
+      "SELECT estado,pagado,total,metodo_pago FROM pedidos WHERE id_pedido=? AND id_usuario=? AND activo=1 FOR UPDATE",
       [orderId, userId],
     );
     if (!order)
@@ -403,10 +410,27 @@ exports.estado = async (req, res) => {
       await descontarStock(connection, userId, orderId);
     if (order.estado !== "cancelado" && req.body.estado === "cancelado")
       await restaurarStock(connection, userId, orderId);
+    const cancelling = req.body.estado === "cancelado";
     await connection.query(
-      "UPDATE pedidos SET estado=? WHERE id_pedido=? AND id_usuario=?",
-      [req.body.estado, orderId, userId],
+      `UPDATE pedidos SET estado=?,pagado=CASE WHEN ?=1 THEN 0 ELSE pagado END,
+       fecha_pago=CASE WHEN ?=1 THEN NULL ELSE fecha_pago END WHERE id_pedido=? AND id_usuario=?`,
+      [
+        req.body.estado,
+        cancelling ? 1 : 0,
+        cancelling ? 1 : 0,
+        orderId,
+        userId,
+      ],
     );
+    if (cancelling)
+      await cajaPedido(
+        connection,
+        userId,
+        orderId,
+        order.total,
+        false,
+        order.metodo_pago,
+      );
     const [[updated]] = await connection.query(
       "SELECT id_pedido,estado,pagado,fecha_actualizacion FROM pedidos WHERE id_pedido=? AND id_usuario=?",
       [orderId, userId],
@@ -426,15 +450,19 @@ exports.pagado = async (req, res) => {
   try {
     await connection.beginTransaction();
     const [[order]] = await connection.query(
-      "SELECT total,metodo_pago FROM pedidos WHERE id_pedido=? AND id_usuario=? AND activo=1 FOR UPDATE",
+      "SELECT total,metodo_pago,estado FROM pedidos WHERE id_pedido=? AND id_usuario=? AND activo=1 FOR UPDATE",
       [req.params.id, req.usuario.id_usuario],
     );
     if (!order)
       throw Object.assign(new Error("Pedido no encontrado"), { status: 404 });
-    const paid = req.body.pagado === true || req.body.pagado === 1,
+    const paid = valorBooleano(req.body.pagado),
       method = metodoPago(req.body.metodo_pago || order.metodo_pago);
+    if (paid && order.estado === "cancelado")
+      throw Object.assign(new Error("No se puede cobrar un pedido cancelado"), {
+        status: 409,
+      });
     await connection.query(
-      "UPDATE pedidos SET pagado=?,metodo_pago=?,fecha_pago=IF(?=1,COALESCE(fecha_pago,NOW()),NULL) WHERE id_pedido=? AND id_usuario=?",
+      "UPDATE pedidos SET pagado=?,metodo_pago=?,fecha_pago=CASE WHEN ?=1 THEN COALESCE(fecha_pago,NOW()) ELSE NULL END WHERE id_pedido=? AND id_usuario=?",
       [paid, method, paid, req.params.id, req.usuario.id_usuario],
     );
     await cajaPedido(
@@ -640,13 +668,11 @@ exports.crearCompra = async (req, res) => {
       ],
     );
     await connection.commit();
-    res
-      .status(201)
-      .json({
-        ok: true,
-        mensaje: "Compra registrada",
-        data: { id_compra: result.insertId, total: discount.total },
-      });
+    res.status(201).json({
+      ok: true,
+      mensaje: "Compra registrada",
+      data: { id_compra: result.insertId, total: discount.total },
+    });
   } catch (error) {
     await connection.rollback();
     throw error;
@@ -785,13 +811,11 @@ exports.guardarCosto = async (req, res) => {
     "INSERT INTO costos_productos(id_usuario,nombre,costo_total,detalle_json) VALUES(?,?,?,?)",
     [req.usuario.id_usuario, name, total, JSON.stringify(details)],
   );
-  res
-    .status(201)
-    .json({
-      ok: true,
-      mensaje: "Costo guardado correctamente",
-      data: { id_costo_producto: result.insertId },
-    });
+  res.status(201).json({
+    ok: true,
+    mensaje: "Costo guardado correctamente",
+    data: { id_costo_producto: result.insertId },
+  });
 };
 
 exports.editarCosto = async (req, res) => {
@@ -840,12 +864,10 @@ exports.movimientoCapital = async (req, res) => {
     !description ||
     description.length > 255
   ) {
-    return res
-      .status(400)
-      .json({
-        ok: false,
-        mensaje: "Completa un monto válido y una descripción",
-      });
+    return res.status(400).json({
+      ok: false,
+      mensaje: "Completa un monto válido y una descripción",
+    });
   }
   const concept =
     type === "ingreso" ? `Aporte: ${description}` : `Retiro: ${description}`;
@@ -855,19 +877,17 @@ exports.movimientoCapital = async (req, res) => {
     VALUES(?,?,'capital',?,?,'manual',NULL,?)`,
     [req.usuario.id_usuario, type, concept, amount, description],
   );
-  res
-    .status(201)
-    .json({
-      ok: true,
-      mensaje: type === "ingreso" ? "Aporte registrado" : "Retiro registrado",
-      data: { id_movimiento_caja: result.insertId },
-    });
+  res.status(201).json({
+    ok: true,
+    mensaje: type === "ingreso" ? "Aporte registrado" : "Retiro registrado",
+    data: { id_movimiento_caja: result.insertId },
+  });
 };
 
 exports.categorias = async (req, res) => {
   const userId = req.usuario.id_usuario;
   await db.query(
-    "INSERT IGNORE INTO categorias_productos(id_usuario,nombre) VALUES(?,'Dulce'),(?,'Salado')",
+    "INSERT INTO categorias_productos(id_usuario,nombre) VALUES(?,'Dulce'),(?,'Salado') ON CONFLICT (id_usuario,nombre) DO NOTHING",
     [userId, userId],
   );
   const [rows] = await db.query(
@@ -887,13 +907,11 @@ exports.crearCategoria = async (req, res) => {
       "INSERT INTO categorias_productos(id_usuario,nombre) VALUES(?,?)",
       [req.usuario.id_usuario, nombre],
     );
-    res
-      .status(201)
-      .json({
-        ok: true,
-        mensaje: "Categoría creada",
-        data: { id_categoria: result.insertId, nombre },
-      });
+    res.status(201).json({
+      ok: true,
+      mensaje: "Categoría creada",
+      data: { id_categoria: result.insertId, nombre },
+    });
   } catch (error) {
     if (error.code === "ER_DUP_ENTRY")
       return res
@@ -957,7 +975,7 @@ exports.informes = async (req, res) => {
     orderArgs.push(text, text);
   }
   const [orders] = await db.query(
-    `SELECT p.*,GROUP_CONCAT(CONCAT(pd.producto_nombre,' x',pd.cantidad) SEPARATOR ', ') detalle FROM pedidos p LEFT JOIN pedido_detalles pd ON pd.id_pedido=p.id_pedido WHERE p.id_usuario=? AND p.activo=1 ${orderWhere} GROUP BY p.id_pedido ORDER BY p.fecha_entrega DESC`,
+    `SELECT p.*,STRING_AGG(CONCAT(pd.producto_nombre,' x',pd.cantidad), ', ') detalle FROM pedidos p LEFT JOIN pedido_detalles pd ON pd.id_pedido=p.id_pedido WHERE p.id_usuario=? AND p.activo=1 ${orderWhere} GROUP BY p.id_pedido ORDER BY p.fecha_entrega DESC`,
     orderArgs,
   );
   const purchaseArgs = [userId];
@@ -968,7 +986,7 @@ exports.informes = async (req, res) => {
     purchaseArgs.push(text, text);
   }
   const [purchases] = await db.query(
-    `SELECT c.*,GROUP_CONCAT(CONCAT(cd.insumo_nombre,' x',cd.cantidad) SEPARATOR ', ') detalle FROM compras c LEFT JOIN compra_detalles cd ON cd.id_compra=c.id_compra WHERE c.id_usuario=? AND c.activo=1 ${purchaseWhere} GROUP BY c.id_compra ORDER BY c.fecha_compra DESC`,
+    `SELECT c.*,STRING_AGG(CONCAT(cd.insumo_nombre,' x',cd.cantidad), ', ') detalle FROM compras c LEFT JOIN compra_detalles cd ON cd.id_compra=c.id_compra WHERE c.id_usuario=? AND c.activo=1 ${purchaseWhere} GROUP BY c.id_compra ORDER BY c.fecha_compra DESC`,
     purchaseArgs,
   );
   const mealArgs = [userId];
@@ -988,11 +1006,11 @@ exports.informes = async (req, res) => {
   }
   const [meals] = await db.query(
     `SELECT v.*,s.frecuencia,
-    COALESCE((SELECT GROUP_CONCAT(CONCAT(d.tipo_nombre,' x',d.cantidad,
-      IF(d.con_postre=1,' + postre','')) SEPARATOR ', ')
+    COALESCE((SELECT STRING_AGG(CONCAT(d.tipo_nombre,' x',d.cantidad,
+      CASE WHEN d.con_postre=1 THEN ' + postre' ELSE '' END), ', ')
       FROM pedido_vianda_detalles d WHERE d.id_pedido_vianda=v.id_pedido_vianda),
       CONCAT(v.tipo_nombre,' x',v.cantidad,
-      IF(v.con_postre=1,' + postre',''))) detalle
+      CASE WHEN v.con_postre=1 THEN ' + postre' ELSE '' END)) detalle
     FROM pedidos_viandas v JOIN series_viandas s ON s.id_serie=v.id_serie
     WHERE v.id_usuario=? AND v.activo=1 ${mealWhere}
     ORDER BY v.fecha_entrega DESC,v.hora_entrega DESC`,

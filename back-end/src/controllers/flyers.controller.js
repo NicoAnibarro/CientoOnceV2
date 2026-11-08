@@ -27,7 +27,7 @@ exports.guardarLogo = async (req, res) => {
   if (!req.file) return res.status(400).json({ ok: false, mensaje: 'Selecciona una imagen' });
   await db.query(
     `INSERT INTO configuraciones_comerciales(id_usuario,logo_mime,logo_imagen)
-     VALUES(?,?,?) ON DUPLICATE KEY UPDATE logo_mime=VALUES(logo_mime),logo_imagen=VALUES(logo_imagen)`,
+     VALUES(?,?,?) ON CONFLICT (id_usuario) DO UPDATE SET logo_mime=EXCLUDED.logo_mime,logo_imagen=EXCLUDED.logo_imagen`,
     [req.usuario.id_usuario, req.file.mimetype, req.file.buffer]
   );
   res.json({ ok: true, mensaje: 'Imagen del negocio actualizada' });

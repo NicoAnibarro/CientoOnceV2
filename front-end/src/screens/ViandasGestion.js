@@ -30,6 +30,7 @@ import { api, message } from "../api/api";
 import colors, { registerThemeListener } from "../theme/colors";
 
 const PAGE_SIZE = 6;
+const DELIVERY_PAGE_SIZE = 8;
 const PAYMENT_METHODS = ["efectivo", "transferencia", "qr", "tarjeta", "mixto"];
 const WEEK_DAYS = [
   [1, "Lun"],
@@ -320,9 +321,21 @@ export function Viandas({ navigation }) {
                   </View>
                   <View style={s.metric}>
                     <Text style={s.metricValue}>
+                      {money(item.total_planes)}
+                    </Text>
+                    <Text style={s.metricLabel}>total</Text>
+                  </View>
+                  <View style={s.metric}>
+                    <Text style={s.metricValue}>
+                      {money(item.cobrado_total)}
+                    </Text>
+                    <Text style={s.metricLabel}>cobrado</Text>
+                  </View>
+                  <View style={s.metric}>
+                    <Text style={s.metricValue}>
                       {money(item.saldo_pendiente)}
                     </Text>
-                    <Text style={s.metricLabel}>saldo</Text>
+                    <Text style={s.metricLabel}>por cobrar</Text>
                   </View>
                 </View>
                 {item.proxima_fecha ? (
@@ -354,30 +367,13 @@ export function Viandas({ navigation }) {
   );
 }
 
-function DeliveryItems({ items = [] }) {
-  return (
-    <View style={s.itemList}>
-      {items.map((item) => (
-        <Text key={item.id_pedido_vianda_detalle} style={s.itemText}>
-          • {item.tipo_nombre} x{item.cantidad}
-          {item.con_postre ? " + postre" : ""}
-        </Text>
-      ))}
-    </View>
-  );
-}
-
 export function DetalleViandasCliente({ navigation, route }) {
   const clientId = route.params?.id_cliente;
   const [data, setData] = useState(null);
   const [selectedSeries, setSelectedSeries] = useState(null);
   const [planPage, setPlanPage] = useState(1);
   const [page, setPage] = useState(1);
-  const [paymentPage, setPaymentPage] = useState(1);
   const [busy, setBusy] = useState(false);
-  const [paymentSeries, setPaymentSeries] = useState(null);
-  const [paymentAmount, setPaymentAmount] = useState("");
-  const [paymentMethod, setPaymentMethod] = useState("efectivo");
 
   const load = useCallback(async () => {
     try {
@@ -406,16 +402,13 @@ export function DetalleViandasCliente({ navigation, route }) {
   const activeSeries =
     series.find((item) => item.id_serie === selectedSeries) || series[0];
   const deliveries = activeSeries?.entregas || [];
-  const payments = activeSeries?.pagos || [];
-  const paymentPages = Math.max(1, Math.ceil(payments.length / PAGE_SIZE));
-  const visiblePayments = payments.slice(
-    (paymentPage - 1) * PAGE_SIZE,
-    paymentPage * PAGE_SIZE,
+  const totalPages = Math.max(
+    1,
+    Math.ceil(deliveries.length / DELIVERY_PAGE_SIZE),
   );
-  const totalPages = Math.max(1, Math.ceil(deliveries.length / PAGE_SIZE));
   const visibleDeliveries = deliveries.slice(
-    (page - 1) * PAGE_SIZE,
-    page * PAGE_SIZE,
+    (page - 1) * DELIVERY_PAGE_SIZE,
+    page * DELIVERY_PAGE_SIZE,
   );
 
   const changeState = async (delivery) => {
@@ -433,18 +426,23 @@ export function DetalleViandasCliente({ navigation, route }) {
     }
   };
 
-  const receiveDailyPayment = (delivery) => {
+  const togglePayment = (delivery) => {
+    const willBePaid = !delivery.pagado;
     Alert.alert(
-      "Confirmar pago recibido",
-      `Se registrará ${money(delivery.total)} por la entrega del ${prettyDate(delivery.fecha_entrega)}. Este movimiento ingresará a caja y no podrá duplicarse por error.`,
+      willBePaid ? "Confirmar cobro" : "Revertir cobro",
+      willBePaid
+        ? `Se sumarán ${money(delivery.total)} a lo cobrado y a caja por el ${prettyDate(delivery.fecha_entrega)}.`
+        : `Se restarán ${money(delivery.total)} de lo cobrado y de caja. Usá esta opción si marcaste el día por error.`,
       [
         { text: "Cancelar", style: "cancel" },
         {
-          text: "Sí, registrar pago",
+          text: willBePaid ? "Sí, cobrar" : "Sí, revertir",
+          style: willBePaid ? "default" : "destructive",
           onPress: async () => {
             try {
               setBusy(true);
-              await api.post(`/viandas/${delivery.id_pedido_vianda}/pago-dia`, {
+              await api.patch(`/viandas/${delivery.id_pedido_vianda}/pagado`, {
+                pagado: willBePaid,
                 metodo_pago: activeSeries?.metodo_pago || "efectivo",
                 fecha_pago: localDate(),
               });
@@ -458,28 +456,6 @@ export function DetalleViandasCliente({ navigation, route }) {
         },
       ],
     );
-  };
-
-  const savePartialPayment = async () => {
-    const amount = numberValue(paymentAmount);
-    if (amount <= 0)
-      return Alert.alert("Monto inválido", "Ingresá un monto mayor que cero.");
-    try {
-      setBusy(true);
-      await api.post(`/viandas/series/${paymentSeries.id_serie}/pagos`, {
-        monto: amount,
-        metodo_pago: paymentMethod,
-        fecha_pago: localDate(),
-        observaciones: "Pago parcial de reserva",
-      });
-      setPaymentSeries(null);
-      setPaymentAmount("");
-      await load();
-    } catch (error) {
-      Alert.alert("No se pudo registrar el pago", message(error));
-    } finally {
-      setBusy(false);
-    }
   };
 
   if (!data)
@@ -527,7 +503,6 @@ export function DetalleViandasCliente({ navigation, route }) {
               onPress={() => {
                 setSelectedSeries(item.id_serie);
                 setPage(1);
-                setPaymentPage(1);
               }}
             >
               <Card style={selected ? s.selectedCard : null}>
@@ -559,18 +534,6 @@ export function DetalleViandasCliente({ navigation, route }) {
                   </Text>
                   <Text style={s.planBalanceText}>Debe {money(balance)}</Text>
                 </View>
-                {!item.pagado ? (
-                  <Button
-                    compact
-                    secondary
-                    icon="wallet-outline"
-                    title="Registrar adelanto o pago parcial"
-                    onPress={() => {
-                      setPaymentSeries(item);
-                      setPaymentMethod(item.metodo_pago || "efectivo");
-                    }}
-                  />
-                ) : null}
               </Card>
             </Pressable>
           );
@@ -583,104 +546,68 @@ export function DetalleViandasCliente({ navigation, route }) {
             setPage(1);
             const first = series[(nextPage - 1) * PAGE_SIZE];
             if (first) setSelectedSeries(first.id_serie);
-            setPaymentPage(1);
           }}
         />
         {activeSeries ? (
           <>
-            {payments.length ? (
-              <Card>
-                <Text style={s.cardTitle}>Pagos registrados</Text>
-                {visiblePayments.map((paymentItem) => (
-                  <View key={paymentItem.id_pago_vianda} style={s.paymentRow}>
-                    <View style={{ flex: 1 }}>
-                      <Text style={s.paymentTitle}>
-                        {paymentItem.id_pedido_vianda
-                          ? "Pago de una entrega"
-                          : "Adelanto o pago parcial"}
-                      </Text>
-                      <Text style={s.muted}>
-                        {prettyDate(paymentItem.fecha_pago)} ·{" "}
-                        {paymentItem.metodo_pago}
-                      </Text>
-                    </View>
-                    <Text style={s.amount}>{money(paymentItem.monto)}</Text>
-                  </View>
-                ))}
-                <Pagination
-                  page={paymentPage}
-                  totalPages={paymentPages}
-                  onChange={setPaymentPage}
-                />
-              </Card>
-            ) : null}
             <View style={s.sectionHeader}>
               <View>
-                <Text style={s.sectionTitle}>Entregas del plan</Text>
-                <Text style={s.muted}>Fechas compactas, seis por página</Text>
+                <Text style={s.sectionTitle}>Fechas del plan</Text>
+                <Text style={s.muted}>
+                  Marcá entrega y cobro por separado · ocho por página
+                </Text>
               </View>
             </View>
-            {visibleDeliveries.map((delivery) => (
-              <Card key={delivery.id_pedido_vianda} style={s.deliveryCard}>
-                <View style={s.spaceBetween}>
-                  <View style={{ flex: 1 }}>
-                    <Text style={s.cardTitle}>
-                      {prettyDate(delivery.fecha_entrega)} ·{" "}
-                      {String(delivery.hora_entrega).slice(0, 5)}
+            <View style={s.deliveryGrid}>
+              {visibleDeliveries.map((delivery) => {
+                const cancelled = delivery.estado === "cancelado";
+                const delivered = delivery.estado === "entregado";
+                return (
+                  <View
+                    key={delivery.id_pedido_vianda}
+                    style={[s.deliveryTile, cancelled && s.disabled]}
+                  >
+                    <Text style={s.deliveryDate}>
+                      {prettyDate(delivery.fecha_entrega)}
                     </Text>
-                    <Text style={s.amount}>{money(delivery.total)}</Text>
-                  </View>
-                  <Status
-                    ok={delivery.estado === "entregado"}
-                    yes="Entregada"
-                    no={
-                      delivery.estado === "cancelado"
-                        ? "Cancelada"
-                        : "Pendiente"
-                    }
-                  />
-                </View>
-                <DeliveryItems items={delivery.items} />
-                <View style={s.deliveryActions}>
-                  <Button
-                    compact
-                    secondary={delivery.estado !== "entregado"}
-                    icon={
-                      delivery.estado === "entregado"
-                        ? "checkmark-circle"
-                        : "cube-outline"
-                    }
-                    title={
-                      delivery.estado === "entregado"
-                        ? "Entregada"
-                        : "Marcar entrega"
-                    }
-                    disabled={busy || delivery.estado === "cancelado"}
-                    onPress={() => changeState(delivery)}
-                    style={{ flex: 1 }}
-                  />
-                  {delivery.pagado ? (
-                    <View style={[s.paidButton, { flex: 1 }]}>
+                    <Text style={s.deliveryMeta}>
+                      {String(delivery.hora_entrega).slice(0, 5)} ·{" "}
+                      {money(delivery.total)}
+                    </Text>
+                    <Pressable
+                      disabled={busy || cancelled}
+                      style={s.checkRow}
+                      onPress={() => changeState(delivery)}
+                    >
                       <Ionicons
-                        name="checkmark-circle"
-                        size={18}
-                        color={colors.primaryDark}
+                        name={delivered ? "checkbox" : "square-outline"}
+                        size={24}
+                        color={
+                          delivered ? colors.primary : colors.textSecondary
+                        }
                       />
-                      <Text style={s.paidButtonText}>Pago registrado</Text>
-                    </View>
-                  ) : (
-                    <Button
-                      compact
-                      icon="cash-outline"
-                      title="Pago recibido"
-                      disabled={busy || delivery.estado === "cancelado"}
-                      onPress={() => receiveDailyPayment(delivery)}
-                      style={{ flex: 1 }}
-                    />
-                  )}
-                </View>
-              </Card>
-            ))}
+                      <Text style={s.checkLabel}>Entregada</Text>
+                    </Pressable>
+                    <Pressable
+                      disabled={busy || cancelled}
+                      style={s.checkRow}
+                      onPress={() => togglePayment(delivery)}
+                    >
+                      <Ionicons
+                        name={delivery.pagado ? "checkbox" : "square-outline"}
+                        size={24}
+                        color={
+                          delivery.pagado
+                            ? colors.primary
+                            : colors.textSecondary
+                        }
+                      />
+                      <Text style={s.checkLabel}>Cobrada</Text>
+                    </Pressable>
+                  </View>
+                );
+              })}
+            </View>
             <Pagination
               page={page}
               totalPages={totalPages}
@@ -691,64 +618,6 @@ export function DetalleViandasCliente({ navigation, route }) {
           <Empty text="Este cliente todavía no tiene planes" />
         )}
       </ScrollView>
-      <Modal
-        visible={!!paymentSeries}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setPaymentSeries(null)}
-      >
-        <View style={s.overlay}>
-          <KeyboardAwareScrollView
-            bottomOffset={90}
-            keyboardShouldPersistTaps="handled"
-            contentContainerStyle={s.modalWrap}
-          >
-            <View style={s.modalCard}>
-              <Header
-                title="Registrar pago"
-                subtitle={`Saldo actual: ${money(
-                  paymentSeries
-                    ? Number(paymentSeries.total_plan) -
-                        Number(paymentSeries.monto_pagado)
-                    : 0,
-                )}`}
-                action={
-                  <IconButton
-                    icon="close"
-                    onPress={() => setPaymentSeries(null)}
-                  />
-                }
-              />
-              <Input
-                icon="cash-outline"
-                placeholder="Monto recibido"
-                keyboardType="decimal-pad"
-                value={paymentAmount}
-                onChangeText={(value) =>
-                  setPaymentAmount(value.replace(",", "."))
-                }
-              />
-              <Text style={s.label}>Método de pago</Text>
-              <View style={s.chips}>
-                {PAYMENT_METHODS.map((method) => (
-                  <Chip
-                    key={method}
-                    label={method}
-                    selected={paymentMethod === method}
-                    onPress={() => setPaymentMethod(method)}
-                  />
-                ))}
-              </View>
-              <Button
-                icon="checkmark"
-                title={busy ? "Registrando…" : "Confirmar pago"}
-                disabled={busy}
-                onPress={savePartialPayment}
-              />
-            </View>
-          </KeyboardAwareScrollView>
-        </View>
-      </Modal>
     </Screen>
   );
 }
@@ -868,7 +737,6 @@ export function NuevaVianda({ navigation, route }) {
   const [discountType, setDiscountType] = useState("porcentaje");
   const [discountValue, setDiscountValue] = useState("");
   const [paymentMode, setPaymentMode] = useState("ninguno");
-  const [advance, setAdvance] = useState("");
   const [method, setMethod] = useState("efectivo");
   const [delivered, setDelivered] = useState(false);
   const [notes, setNotes] = useState("");
@@ -1049,15 +917,6 @@ export function NuevaVianda({ navigation, route }) {
         "Revisá las fechas",
         "La frecuencia elegida no genera entregas.",
       );
-    const initialPayment = paymentMode === "parcial" ? numberValue(advance) : 0;
-    if (
-      paymentMode === "parcial" &&
-      (initialPayment <= 0 || initialPayment >= totalPlan)
-    )
-      return Alert.alert(
-        "Adelanto inválido",
-        "El adelanto debe ser mayor que cero y menor que el total del plan.",
-      );
     const body = {
       id_cliente: clientId,
       items: items.map((item) => ({
@@ -1077,7 +936,6 @@ export function NuevaVianda({ navigation, route }) {
       dias_semana: frequency === "unico" ? [] : weekDays,
       hora_entrega: time,
       pagado: paymentMode === "completo",
-      pago_inicial: initialPayment,
       fecha_pago: paymentMode === "ninguno" ? null : localDate(),
       metodo_pago: method,
       estado: delivered ? "entregado" : "pendiente",
@@ -1324,7 +1182,6 @@ export function NuevaVianda({ navigation, route }) {
         <View style={s.chips}>
           {[
             ["ninguno", "Nada todavía"],
-            ["parcial", "Entregó una parte"],
             ["completo", "Pagó todo"],
           ].map(([key, label]) => (
             <Chip
@@ -1335,14 +1192,11 @@ export function NuevaVianda({ navigation, route }) {
             />
           ))}
         </View>
-        {paymentMode === "parcial" ? (
-          <Input
-            icon="cash-outline"
-            placeholder="Monto entregado a cuenta"
-            keyboardType="decimal-pad"
-            value={advance}
-            onChangeText={(value) => setAdvance(value.replace(",", "."))}
-          />
+        {paymentMode === "ninguno" ? (
+          <Text style={s.info}>
+            Si entrega un adelanto, creá la reserva sin pagar y luego marcá como
+            cobradas las fechas que cubre ese dinero.
+          </Text>
         ) : null}
         <Text style={s.label}>Método de pago acordado</Text>
         <View style={s.chips}>
@@ -1375,9 +1229,7 @@ export function NuevaVianda({ navigation, route }) {
           <Text style={s.summaryHint}>
             {paymentMode === "completo"
               ? "Quedará pagado por completo."
-              : paymentMode === "parcial"
-                ? `Adelanto ${money(advance)} · resta ${money(Math.max(0, totalPlan - numberValue(advance)))}`
-                : "El total quedará como saldo pendiente."}
+              : "El total quedará como saldo pendiente."}
           </Text>
         </View>
         <Button
@@ -1525,9 +1377,14 @@ const createStyles = () =>
       justifyContent: "space-between",
       gap: 10,
     },
-    metrics: { flexDirection: "row", gap: 9, marginTop: 14 },
+    metrics: {
+      flexDirection: "row",
+      flexWrap: "wrap",
+      gap: 9,
+      marginTop: 14,
+    },
     metric: {
-      flex: 1,
+      width: "48%",
       backgroundColor: colors.primarySoft,
       borderRadius: 13,
       padding: 11,
@@ -1569,41 +1426,35 @@ const createStyles = () =>
     planTotalText: { color: colors.text, fontWeight: "800" },
     planPaidText: { color: colors.primaryDark, fontWeight: "800" },
     planBalanceText: { color: colors.warning || "#93610B", fontWeight: "900" },
-    deliveryCard: { padding: 13 },
+    deliveryGrid: {
+      flexDirection: "row",
+      flexWrap: "wrap",
+      justifyContent: "space-between",
+      gap: 9,
+    },
+    deliveryTile: {
+      width: "48%",
+      backgroundColor: colors.surface,
+      borderColor: colors.border,
+      borderWidth: 1,
+      borderRadius: 15,
+      padding: 12,
+    },
+    deliveryDate: { color: colors.text, fontWeight: "900", fontSize: 15 },
+    deliveryMeta: {
+      color: colors.textSecondary,
+      fontSize: 12,
+      marginTop: 3,
+      marginBottom: 7,
+    },
+    checkRow: {
+      minHeight: 35,
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 7,
+    },
+    checkLabel: { color: colors.text, fontWeight: "700", fontSize: 13 },
     amount: { color: colors.primaryDark, fontWeight: "900", marginTop: 4 },
-    itemList: { marginTop: 9, gap: 3 },
-    itemText: { color: colors.textSecondary },
-    paymentRow: {
-      flexDirection: "row",
-      alignItems: "center",
-      gap: 10,
-      paddingVertical: 9,
-      borderBottomWidth: 1,
-      borderBottomColor: colors.border,
-    },
-    paymentTitle: { color: colors.text, fontWeight: "800" },
-    deliveryActions: {
-      flexDirection: "row",
-      alignItems: "center",
-      gap: 8,
-      marginTop: 10,
-    },
-    paidButton: {
-      minHeight: 40,
-      flexDirection: "row",
-      alignItems: "center",
-      justifyContent: "center",
-      gap: 6,
-      backgroundColor: colors.primarySoft,
-      borderRadius: 11,
-      paddingHorizontal: 8,
-      marginVertical: 5,
-    },
-    paidButtonText: {
-      color: colors.primaryDark,
-      fontWeight: "800",
-      fontSize: 13,
-    },
     overlay: { flex: 1, backgroundColor: "rgba(0,0,0,.4)", padding: 16 },
     modalWrap: { flexGrow: 1, justifyContent: "center" },
     modalCard: {

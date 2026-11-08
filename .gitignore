@@ -3,6 +3,7 @@
 **/.env
 **/.env.production
 **/.render-token
+**/.aiven-token*
 !.env.example
 !**/.env.example
 !**/.env.production.example

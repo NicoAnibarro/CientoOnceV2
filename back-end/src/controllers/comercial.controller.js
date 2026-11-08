@@ -51,8 +51,9 @@ exports.crearCierre = async (req, res) => {
   const difference = Number((counted - expected).toFixed(2));
   await db.query(
     `INSERT INTO cierres_caja(id_usuario,fecha_cierre,efectivo_esperado,efectivo_contado,diferencia,resumen_json,observaciones)
-    VALUES(?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE efectivo_esperado=VALUES(efectivo_esperado),efectivo_contado=VALUES(efectivo_contado),
-    diferencia=VALUES(diferencia),resumen_json=VALUES(resumen_json),observaciones=VALUES(observaciones)`,
+    VALUES(?,?,?,?,?,?,?) ON CONFLICT (id_usuario,fecha_cierre) DO UPDATE SET
+    efectivo_esperado=EXCLUDED.efectivo_esperado,efectivo_contado=EXCLUDED.efectivo_contado,
+    diferencia=EXCLUDED.diferencia,resumen_json=EXCLUDED.resumen_json,observaciones=EXCLUDED.observaciones`,
     [
       userId,
       date,
@@ -233,7 +234,7 @@ exports.guardarPaletaApp = async (req, res) => {
   if (!palettes.includes(palette))
     return res.status(400).json({ ok: false, mensaje: "Paleta no valida" });
   await db.query(
-    `INSERT INTO configuraciones_comerciales(id_usuario,paleta_app) VALUES(?,?) ON DUPLICATE KEY UPDATE paleta_app=VALUES(paleta_app)`,
+    `INSERT INTO configuraciones_comerciales(id_usuario,paleta_app) VALUES(?,?) ON CONFLICT (id_usuario) DO UPDATE SET paleta_app=EXCLUDED.paleta_app`,
     [req.usuario.id_usuario, palette],
   );
   res.json({
@@ -249,7 +250,7 @@ exports.guardarConfig = async (req, res) => {
       ? b.paleta_visual
       : "verde_crema";
   await db.query(
-    `INSERT INTO configuraciones_comerciales(id_usuario,nombre_negocio,telefono,direccion,cuit,mercado_pago_activo,arca_activo,arca_ambiente,arca_punto_venta,paleta_visual) VALUES(?,?,?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE nombre_negocio=VALUES(nombre_negocio),telefono=VALUES(telefono),direccion=VALUES(direccion),cuit=VALUES(cuit),mercado_pago_activo=VALUES(mercado_pago_activo),arca_activo=VALUES(arca_activo),arca_ambiente=VALUES(arca_ambiente),arca_punto_venta=VALUES(arca_punto_venta),paleta_visual=VALUES(paleta_visual)`,
+    `INSERT INTO configuraciones_comerciales(id_usuario,nombre_negocio,telefono,direccion,cuit,mercado_pago_activo,arca_activo,arca_ambiente,arca_punto_venta,paleta_visual) VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT (id_usuario) DO UPDATE SET nombre_negocio=EXCLUDED.nombre_negocio,telefono=EXCLUDED.telefono,direccion=EXCLUDED.direccion,cuit=EXCLUDED.cuit,mercado_pago_activo=EXCLUDED.mercado_pago_activo,arca_activo=EXCLUDED.arca_activo,arca_ambiente=EXCLUDED.arca_ambiente,arca_punto_venta=EXCLUDED.arca_punto_venta,paleta_visual=EXCLUDED.paleta_visual`,
     [
       req.usuario.id_usuario,
       String(b.nombre_negocio || "").trim() || null,
@@ -339,7 +340,7 @@ exports.mercadoPagoWebhook = async (req, res) => {
     );
     if (!order) return;
     await db.query(
-      `INSERT INTO pagos_integracion(id_usuario,proveedor,proveedor_pago_id,id_pedido,estado,monto,payload_json) VALUES(?,'mercado_pago',?,?,?,?,?) ON DUPLICATE KEY UPDATE estado=VALUES(estado),monto=VALUES(monto),payload_json=VALUES(payload_json)`,
+      `INSERT INTO pagos_integracion(id_usuario,proveedor,proveedor_pago_id,id_pedido,estado,monto,payload_json) VALUES(?,'mercado_pago',?,?,?,?,?) ON CONFLICT (proveedor,proveedor_pago_id) DO UPDATE SET estado=EXCLUDED.estado,monto=EXCLUDED.monto,payload_json=EXCLUDED.payload_json`,
       [
         order.id_usuario,
         paymentId,
@@ -355,7 +356,7 @@ exports.mercadoPagoWebhook = async (req, res) => {
         [orderId, order.id_usuario],
       );
       await db.query(
-        `INSERT INTO movimientos_caja(id_usuario,tipo,categoria,concepto,monto,metodo_pago,origen,origen_id,anulado) VALUES(?,'ingreso','pedido',?,?,'qr','pedido',?,0) ON DUPLICATE KEY UPDATE monto=VALUES(monto),metodo_pago='qr',anulado=0,fecha_movimiento=NOW()`,
+        `INSERT INTO movimientos_caja(id_usuario,tipo,categoria,concepto,monto,metodo_pago,origen,origen_id,anulado) VALUES(?,'ingreso','pedido',?,?,'qr','pedido',?,0) ON CONFLICT (id_usuario,origen,origen_id) DO UPDATE SET monto=EXCLUDED.monto,metodo_pago='qr',anulado=0,fecha_movimiento=NOW()`,
         [
           order.id_usuario,
           `Pago Mercado Pago pedido #${orderId}`,

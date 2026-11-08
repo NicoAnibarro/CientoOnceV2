@@ -27,7 +27,7 @@ async function issue(connection, userId, purpose) {
     [userId, purpose]
   );
   await connection.query(
-    'INSERT INTO tokens_autenticacion(id_usuario,proposito,token_hash,codigo_hash,vence_en) VALUES(?,?,?,?,DATE_ADD(NOW(),INTERVAL 30 MINUTE))',
+    "INSERT INTO tokens_autenticacion(id_usuario,proposito,token_hash,codigo_hash,vence_en) VALUES(?,?,?,?,NOW() + INTERVAL '30 minutes')",
     [userId, purpose, hash(rawToken), hash(code)]
   );
   return { rawToken, code };
@@ -72,7 +72,7 @@ exports.register = async (req, res) => {
     if (exists) throw Object.assign(new Error('El email ya está registrado'), { status: 409 });
     const passwordHash = await bcrypt.hash(password, 12);
     const [result] = await connection.query(
-      'INSERT INTO usuarios(nombre,email,password_hash,email_verificado,fecha_verificacion_email) VALUES(?,?,?, ?,IF(?=1,NOW(),NULL))',
+      'INSERT INTO usuarios(nombre,email,password_hash,email_verificado,fecha_verificacion_email) VALUES(?,?,?, ?,CASE WHEN ?=1 THEN NOW() ELSE NULL END)',
       [nombre, email, passwordHash, skipVerification ? 1 : 0, skipVerification ? 1 : 0]
     );
     if (!skipVerification) {

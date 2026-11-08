@@ -1,5 +1,5 @@
-const path = require("path");
-const mysql = require("mysql2/promise");
+const path = require("node:path");
+const { Client } = require("pg");
 
 require("dotenv").config({ path: path.join(__dirname, "../.env.production") });
 
@@ -30,13 +30,22 @@ const preservedTables = [
   "usuarios",
 ];
 
-async function counts(connection, tables) {
+function ssl() {
+  if (process.env.DB_SSL !== "true") return undefined;
+  const ca = process.env.DB_CA_CERT_BASE64
+    ? Buffer.from(process.env.DB_CA_CERT_BASE64, "base64").toString("utf8")
+    : undefined;
+  return {
+    rejectUnauthorized: process.env.DB_SSL_REJECT_UNAUTHORIZED !== "false",
+    ...(ca ? { ca } : {}),
+  };
+}
+
+async function counts(client, tables) {
   const result = {};
   for (const table of tables) {
-    const [[row]] = await connection.query(
-      `SELECT COUNT(*) count FROM ${table}`,
-    );
-    result[table] = Number(row.count);
+    const { rows } = await client.query(`SELECT COUNT(*)::int count FROM ${table}`);
+    result[table] = rows[0].count;
   }
   return result;
 }
@@ -53,66 +62,56 @@ async function run() {
   if (!host || ["localhost", "127.0.0.1", "::1"].includes(host.toLowerCase())) {
     throw new Error("La limpieza productiva rechaza conexiones locales");
   }
-  if (database !== "ciento_once_v2") {
-    throw new Error(
-      `Base rechazada: se esperaba ciento_once_v2 y se recibió ${database || "(vacía)"}`,
-    );
+  if (database !== "defaultdb" || !host.includes("aivencloud.com")) {
+    throw new Error("El destino no es el PostgreSQL administrado de CientoOnce");
   }
-  const connection = await mysql.createConnection({
+
+  const client = new Client({
     host,
-    port: Number(process.env.DB_PORT || 3306),
+    port: Number(process.env.DB_PORT || 5432),
     user: process.env.DB_USER,
     password: process.env.DB_PASSWORD,
     database,
-    ssl:
-      process.env.DB_SSL === "true"
-        ? {
-            rejectUnauthorized:
-              process.env.DB_SSL_REJECT_UNAUTHORIZED !== "false",
-          }
-        : undefined,
+    ssl: ssl(),
   });
+  await client.connect();
   try {
-    const beforeClean = await counts(connection, cleanedTables);
-    const beforePreserved = await counts(connection, preservedTables);
-    const [[stockBefore]] = await connection.query(
-      "SELECT COUNT(*) productos,SUM(stock_actual) stock_total FROM productos",
-    );
+    const beforeClean = await counts(client, cleanedTables);
+    const beforePreserved = await counts(client, preservedTables);
+    const stockBefore = (
+      await client.query(
+        "SELECT COUNT(*)::int productos,COALESCE(SUM(stock_actual),0)::int stock_total FROM productos",
+      )
+    ).rows[0];
     console.log("A eliminar:", beforeClean);
     console.log("A preservar:", beforePreserved, "stock:", stockBefore);
-    await connection.beginTransaction();
-    for (const table of cleanedTables)
-      await connection.query(`DELETE FROM ${table}`);
-    await connection.query("UPDATE productos SET stock_actual=0");
-    const afterClean = await counts(connection, cleanedTables);
-    const afterPreserved = await counts(connection, preservedTables);
-    const [[stockAfter]] = await connection.query(
-      "SELECT COUNT(*) productos,SUM(stock_actual) stock_total FROM productos",
-    );
+
+    await client.query("BEGIN");
+    for (const table of cleanedTables) await client.query(`DELETE FROM ${table}`);
+    await client.query("UPDATE productos SET stock_actual=0");
+
+    const afterClean = await counts(client, cleanedTables);
+    const afterPreserved = await counts(client, preservedTables);
+    const stockAfter = (
+      await client.query(
+        "SELECT COUNT(*)::int productos,COALESCE(SUM(stock_actual),0)::int stock_total FROM productos",
+      )
+    ).rows[0];
     if (
       Object.values(afterClean).some((value) => value !== 0) ||
       JSON.stringify(beforePreserved) !== JSON.stringify(afterPreserved) ||
-      Number(stockAfter.stock_total || 0) !== 0
+      stockAfter.stock_total !== 0
     ) {
-      throw new Error(
-        "La verificación detectó cambios en datos que debían preservarse",
-      );
+      throw new Error("La verificación detectó cambios en datos preservados");
     }
-    await connection.commit();
+    await client.query("COMMIT");
     console.log("Limpieza terminada:", afterClean);
-    console.log(
-      "Datos preservados verificados:",
-      afterPreserved,
-      "stock:",
-      stockAfter,
-    );
+    console.log("Datos preservados verificados:", afterPreserved, "stock:", stockAfter);
   } catch (error) {
-    try {
-      await connection.rollback();
-    } catch {}
+    await client.query("ROLLBACK").catch(() => {});
     throw error;
   } finally {
-    await connection.end();
+    await client.end();
   }
 }
 

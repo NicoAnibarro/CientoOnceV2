@@ -8,17 +8,10 @@
     "dev": "node src/server.js",
     "check": "node --check src/server.js && node --check src/app.js",
     "test:integration": "node tests/integration.js",
+    "test:stress": "node tests/stress.js",
     "test:isolated": "node scripts/test-isolated.js",
+    "test:isolated:render": "node scripts/test-isolated-render.js",
     "db:import": "node scripts/import-schema.js",
-    "db:migrate:003": "node scripts/migrate-003.js",
-    "db:migrate:004": "node scripts/migrate-004.js",
-    "db:migrate:005": "node scripts/migrate-005.js",
-    "db:migrate:006": "node scripts/migrate-006.js",
-    "db:migrate:007": "node scripts/migrate-007.js",
-    "db:migrate:008": "node scripts/migrate-008.js",
-    "db:migrate:009": "node scripts/migrate-009.js",
-    "db:migrate:011": "node scripts/migrate-011.js",
-    "db:migrate:production": "node scripts/migrate-production.js",
     "db:clean:production": "node scripts/clean-production-business-data.js",
     "gmail:verify": "node scripts/verify-gmail.js",
     "gmail:test-send": "node scripts/test-gmail-send.js",
@@ -39,8 +32,7 @@
     "helmet": "^8.1.0",
     "jsonwebtoken": "^9.0.2",
     "multer": "^2.2.0",
-    "mysql2": "^3.15.3",
-    "nodemailer": "^9.0.6"
-  },
-  "devDependencies": {}
+    "nodemailer": "^10.3.1",
+    "pg": "^8.23.1"
+  }
 }

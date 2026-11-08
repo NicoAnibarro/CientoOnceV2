@@ -152,7 +152,7 @@ exports.pedidos = async (req, res) => {
     `SELECT p.id_pedido,p.cliente_nombre,p.cliente_telefono,
       COALESCE(c.direccion,p.cliente_direccion) direccion,c.latitud,c.longitud,p.fecha_entrega,
       p.estado,p.pagado,p.total,
-      (SELECT GROUP_CONCAT(CONCAT(pd.producto_nombre,' x',pd.cantidad) SEPARATOR ', ') FROM pedido_detalles pd WHERE pd.id_pedido=p.id_pedido) detalle
+      (SELECT STRING_AGG(CONCAT(pd.producto_nombre,' x',pd.cantidad), ', ') FROM pedido_detalles pd WHERE pd.id_pedido=p.id_pedido) detalle
     FROM pedidos p LEFT JOIN clientes c ON c.id_cliente=p.id_cliente AND c.id_usuario=p.id_usuario
     WHERE ${where} ORDER BY p.fecha_entrega ASC,p.id_pedido ASC`,
     args,

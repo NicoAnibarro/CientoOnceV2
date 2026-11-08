@@ -1,51 +1,70 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
-const mysql = require("mysql2/promise");
+const { Client } = require("pg");
 
 require("dotenv").config({ path: path.join(__dirname, "../.env") });
 
-const database = `ciento_once_v2_test_${Date.now()}`;
-if (!/^ciento_once_v2_test_\d+$/.test(database)) {
-  throw new Error("Nombre de base temporal rechazado");
+const schemaName = `ciento_once_v2_test_${Date.now()}`;
+if (!/^ciento_once_v2_test_\d+$/.test(schemaName)) {
+  throw new Error("Nombre de esquema temporal rechazado");
+}
+
+function ssl() {
+  if (process.env.DB_SSL !== "true") return undefined;
+  const ca = process.env.DB_CA_CERT_BASE64
+    ? Buffer.from(process.env.DB_CA_CERT_BASE64, "base64").toString("utf8")
+    : undefined;
+  return {
+    rejectUnauthorized: process.env.DB_SSL_REJECT_UNAUTHORIZED !== "false",
+    ...(ca ? { ca } : {}),
+  };
 }
 
 async function run() {
-  const connection = await mysql.createConnection({
+  const client = new Client({
     host: process.env.DB_HOST,
-    port: Number(process.env.DB_PORT || 3306),
+    port: Number(process.env.DB_PORT || 5432),
     user: process.env.DB_USER,
     password: process.env.DB_PASSWORD,
-    multipleStatements: true,
+    database: process.env.DB_NAME,
+    ssl: ssl(),
   });
+  await client.connect();
   try {
     const source = fs.readFileSync(
-      path.join(__dirname, "../../database/001_schema.sql"),
+      path.join(__dirname, "../../database/001_schema_postgresql.sql"),
       "utf8",
     );
-    const schema = source.replaceAll("ciento_once_v2", database);
-    await connection.query(schema);
-    console.log(`Base aislada creada: ${database}`);
-    const exitCode = await new Promise((resolve, reject) => {
-      const child = spawn(process.execPath, ["tests/integration.js"], {
-        cwd: path.join(__dirname, ".."),
-        stdio: "inherit",
-        env: {
-          ...process.env,
-          DB_NAME: database,
-          REQUIRE_EMAIL_VERIFICATION: "false",
-          NODE_ENV: "test",
-        },
+    await client.query(`CREATE SCHEMA ${schemaName}`);
+    await client.query(`SET search_path TO ${schemaName},public`);
+    await client.query(source);
+    console.log(`Esquema PostgreSQL aislado creado: ${schemaName}`);
+
+    for (const test of ["tests/integration.js", "tests/stress.js"]) {
+      const exitCode = await new Promise((resolve, reject) => {
+        const child = spawn(process.execPath, [test], {
+          cwd: path.join(__dirname, ".."),
+          stdio: "inherit",
+          env: {
+            ...process.env,
+            DB_SCHEMA: schemaName,
+            REQUIRE_EMAIL_VERIFICATION: "false",
+            NODE_ENV: "test",
+          },
+        });
+        child.once("error", reject);
+        child.once("exit", (code) => resolve(code ?? 1));
       });
-      child.once("error", reject);
-      child.once("exit", (code) => resolve(code ?? 1));
-    });
-    if (exitCode !== 0)
-      throw new Error(`Las pruebas terminaron con código ${exitCode}`);
+      if (exitCode !== 0) {
+        throw new Error(`${test} terminó con código ${exitCode}`);
+      }
+    }
   } finally {
-    await connection.query(`DROP DATABASE IF EXISTS \`${database}\``);
-    await connection.end();
-    console.log(`Base aislada eliminada: ${database}`);
+    await client.query("SET search_path TO public");
+    await client.query(`DROP SCHEMA IF EXISTS ${schemaName} CASCADE`);
+    await client.end();
+    console.log(`Esquema PostgreSQL aislado eliminado: ${schemaName}`);
   }
 }
 

@@ -32,7 +32,7 @@ app.get("/api/health", (req, res) =>
 app.get("/api/test-db", async (req, res, next) => {
   try {
     await db.query("SELECT 1");
-    res.json({ ok: true, mensaje: "Conexion MySQL correcta" });
+    res.json({ ok: true, mensaje: "Conexion PostgreSQL correcta" });
   } catch (error) {
     next(error);
   }

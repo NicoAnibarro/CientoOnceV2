@@ -25,11 +25,16 @@ function calculateDiscount(subtotal, body) {
     (type === "porcentaje" && value > 100)
   )
     throw Object.assign(new Error("Descuento inválido"), { status: 400 });
-  const amount = round(type === "porcentaje" ? (subtotal * value) / 100 : value);
+  const amount = round(
+    type === "porcentaje" ? (subtotal * value) / 100 : value,
+  );
   if (amount > subtotal)
-    throw Object.assign(new Error("El descuento no puede superar el subtotal"), {
-      status: 400,
-    });
+    throw Object.assign(
+      new Error("El descuento no puede superar el subtotal"),
+      {
+        status: 400,
+      },
+    );
   return { type, value, amount, total: round(subtotal - amount) };
 }
 
@@ -39,7 +44,8 @@ function selectedWeekdays(frequency, weekDays, start) {
       .map(Number)
       .filter((day) => Number.isInteger(day) && day >= 0 && day <= 6),
   );
-  if (frequency === "semanal" && !selected.size) selected.add(start.getUTCDay());
+  if (frequency === "semanal" && !selected.size)
+    selected.add(start.getUTCDay());
   if (["diario", "mensual"].includes(frequency) && !selected.size)
     WEEKDAYS.forEach((day) => selected.add(day));
   return selected;
@@ -48,16 +54,21 @@ function selectedWeekdays(frequency, weekDays, start) {
 function deliveryDates(startText, endText, frequency, weekDays) {
   if (!fechaValida(startText))
     throw Object.assign(new Error("Fecha inicial inválida"), { status: 400 });
-  const normalizedFrequency = FREQUENCIES.includes(frequency) ? frequency : "unico";
+  const normalizedFrequency = FREQUENCIES.includes(frequency)
+    ? frequency
+    : "unico";
   const finalText = normalizedFrequency === "unico" ? startText : endText;
   if (!fechaValida(finalText))
     throw Object.assign(new Error("Fecha final inválida"), { status: 400 });
   const start = new Date(`${startText}T12:00:00Z`);
   const end = new Date(`${finalText}T12:00:00Z`);
   if (end < start)
-    throw Object.assign(new Error("La fecha final no puede ser anterior a la inicial"), {
-      status: 400,
-    });
+    throw Object.assign(
+      new Error("La fecha final no puede ser anterior a la inicial"),
+      {
+        status: 400,
+      },
+    );
   if ((end - start) / 86400000 > 730)
     throw Object.assign(new Error("El plan no puede superar dos años"), {
       status: 400,
@@ -77,19 +88,22 @@ function deliveryDates(startText, endText, frequency, weekDays) {
       status: 400,
     });
   if (dates.length > 520)
-    throw Object.assign(new Error("El plan genera demasiadas entregas; acorta el rango"), {
-      status: 400,
-    });
+    throw Object.assign(
+      new Error("El plan genera demasiadas entregas; acorta el rango"),
+      {
+        status: 400,
+      },
+    );
   return dates;
 }
 
 async function ensureConfiguration(connection, userId) {
   await connection.query(
-    "INSERT IGNORE INTO configuraciones_viandas(id_usuario) VALUES(?)",
+    "INSERT INTO configuraciones_viandas(id_usuario) VALUES(?) ON CONFLICT (id_usuario) DO NOTHING",
     [userId],
   );
   await connection.query(
-    "INSERT IGNORE INTO tipos_vianda(id_usuario,nombre,precio_base) VALUES(?,'Vianda',0),(?,'Vianda reforzada',0)",
+    "INSERT INTO tipos_vianda(id_usuario,nombre,precio_base) VALUES(?,'Vianda',0),(?,'Vianda reforzada',0) ON CONFLICT (id_usuario,nombre) DO NOTHING",
     [userId, userId],
   );
 }
@@ -101,20 +115,27 @@ async function orderValues(connection, userId, body) {
   );
   if (!client)
     throw Object.assign(new Error("Cliente no encontrado"), { status: 404 });
-  const requested = Array.isArray(body.items) && body.items.length
-    ? body.items
-    : [{
-        id_tipo_vianda: body.id_tipo_vianda,
-        cantidad: body.cantidad,
-        precio_unitario: body.precio_unitario,
-        con_postre: body.con_postre,
-        precio_postre_unitario: body.precio_postre_unitario,
-      }];
+  const requested =
+    Array.isArray(body.items) && body.items.length
+      ? body.items
+      : [
+          {
+            id_tipo_vianda: body.id_tipo_vianda,
+            cantidad: body.cantidad,
+            precio_unitario: body.precio_unitario,
+            con_postre: body.con_postre,
+            precio_postre_unitario: body.precio_postre_unitario,
+          },
+        ];
   if (requested.length > 20)
     throw Object.assign(new Error("Una entrega admite hasta 20 renglones"), {
       status: 400,
     });
-  const ids = [...new Set(requested.map((item) => Number(item.id_tipo_vianda)).filter(Boolean))];
+  const ids = [
+    ...new Set(
+      requested.map((item) => Number(item.id_tipo_vianda)).filter(Boolean),
+    ),
+  ];
   if (!ids.length)
     throw Object.assign(new Error("Agrega al menos un tipo de vianda"), {
       status: 400,
@@ -124,19 +145,27 @@ async function orderValues(connection, userId, body) {
      WHERE id_usuario=? AND activo=1 AND id_tipo_vianda IN (${ids.map(() => "?").join(",")})`,
     [userId, ...ids],
   );
-  const typeMap = new Map(types.map((item) => [Number(item.id_tipo_vianda), item]));
+  const typeMap = new Map(
+    types.map((item) => [Number(item.id_tipo_vianda), item]),
+  );
   const items = requested.map((raw) => {
     const type = typeMap.get(Number(raw.id_tipo_vianda));
     if (!type)
-      throw Object.assign(new Error("Tipo de vianda no encontrado"), { status: 404 });
+      throw Object.assign(new Error("Tipo de vianda no encontrado"), {
+        status: 404,
+      });
     const quantity = entero(Number(raw.cantidad));
     const unitPrice = numero(raw.precio_unitario ?? type.precio_base);
     const dessert = booleanValue(raw.con_postre);
     const dessertPrice = dessert ? numero(raw.precio_postre_unitario || 0) : 0;
     if (
-      !quantity || quantity < 1 || quantity > 999 ||
-      unitPrice === null || unitPrice < 0 ||
-      dessertPrice === null || dessertPrice < 0
+      !quantity ||
+      quantity < 1 ||
+      quantity > 999 ||
+      unitPrice === null ||
+      unitPrice < 0 ||
+      dessertPrice === null ||
+      dessertPrice < 0
     )
       throw Object.assign(new Error("Cantidad o importes inválidos"), {
         status: 400,
@@ -155,7 +184,9 @@ async function orderValues(connection, userId, body) {
   const shippingPrice = shipping ? numero(body.costo_envio || 0) : 0;
   if (shippingPrice === null || shippingPrice < 0)
     throw Object.assign(new Error("Costo de envío inválido"), { status: 400 });
-  const subtotal = round(items.reduce((sum, item) => sum + item.subtotal, 0) + shippingPrice);
+  const subtotal = round(
+    items.reduce((sum, item) => sum + item.subtotal, 0) + shippingPrice,
+  );
   const discount = calculateDiscount(subtotal, body);
   return { client, items, shipping, shippingPrice, subtotal, discount };
 }
@@ -163,11 +194,17 @@ async function orderValues(connection, userId, body) {
 function headerFor(items) {
   return {
     idType: items[0].idType,
-    typeName: items.map((item) => `${item.typeName} x${item.quantity}`).join(" + ").slice(0, 100),
+    typeName: items
+      .map((item) => `${item.typeName} x${item.quantity}`)
+      .join(" + ")
+      .slice(0, 100),
     quantity: items.reduce((sum, item) => sum + item.quantity, 0),
     unitPrice: items[0].unitPrice,
     dessert: items.some((item) => item.dessert),
-    dessertPrice: items.reduce((sum, item) => Math.max(sum, item.dessertPrice), 0),
+    dessertPrice: items.reduce(
+      (sum, item) => Math.max(sum, item.dessertPrice),
+      0,
+    ),
   };
 }
 
@@ -177,91 +214,169 @@ async function insertDetails(connection, userId, orderId, items) {
       `INSERT INTO pedido_vianda_detalles
        (id_usuario,id_pedido_vianda,id_tipo_vianda,tipo_nombre,cantidad,precio_unitario,con_postre,precio_postre_unitario,subtotal)
        VALUES(?,?,?,?,?,?,?,?,?)`,
-      [userId, orderId, item.idType, item.typeName, item.quantity, item.unitPrice,
-        item.dessert ? 1 : 0, item.dessertPrice, item.subtotal],
+      [
+        userId,
+        orderId,
+        item.idType,
+        item.typeName,
+        item.quantity,
+        item.unitPrice,
+        item.dessert ? 1 : 0,
+        item.dessertPrice,
+        item.subtotal,
+      ],
     );
   }
 }
 
-async function insertPayment(
-  connection,
-  userId,
-  seriesId,
-  amountValue,
-  methodValue,
-  date,
-  notes,
-  orderId = null,
-) {
-  const amount = numero(amountValue);
-  if (amount === null || amount <= 0)
-    throw Object.assign(new Error("El pago debe ser mayor que cero"), { status: 400 });
+async function syncSeries(connection, userId, seriesId) {
+  const [[totals]] = await connection.query(
+    `SELECT
+       COALESCE((SELECT SUM(v.total) FROM pedidos_viandas v
+         WHERE v.id_usuario=? AND v.id_serie=? AND v.activo=1),0) total_plan,
+       COALESCE((SELECT SUM(p.monto) FROM pagos_viandas p
+         WHERE p.id_usuario=? AND p.id_serie=? AND p.activo=1),0) monto_pagado`,
+    [userId, seriesId, userId, seriesId],
+  );
+  const total = round(totals.total_plan);
+  const paid = round(totals.monto_pagado);
+  await connection.query(
+    `UPDATE series_viandas SET total_plan=?,monto_pagado=?,pagado=?
+     WHERE id_serie=? AND id_usuario=?`,
+    [
+      total,
+      paid,
+      total <= 0 || paid + 0.005 >= total ? 1 : 0,
+      seriesId,
+      userId,
+    ],
+  );
   const [[series]] = await connection.query(
-    `SELECT id_serie,cliente_nombre,total_plan,monto_pagado FROM series_viandas
-     WHERE id_serie=? AND id_usuario=? AND activo=1 FOR UPDATE`,
+    `SELECT id_serie,total_plan,monto_pagado,pagado,metodo_pago,
+     GREATEST(total_plan-monto_pagado,0) saldo_pendiente
+     FROM series_viandas WHERE id_serie=? AND id_usuario=?`,
     [seriesId, userId],
   );
-  if (!series)
-    throw Object.assign(new Error("Reserva de viandas no encontrada"), { status: 404 });
-  let delivery = null;
-  if (orderId) {
-    [[delivery]] = await connection.query(
-      `SELECT id_pedido_vianda,total,pagado FROM pedidos_viandas
-       WHERE id_pedido_vianda=? AND id_serie=? AND id_usuario=? AND activo=1 FOR UPDATE`,
-      [orderId, seriesId, userId],
-    );
-    if (!delivery)
-      throw Object.assign(new Error("Entrega de vianda no encontrada"), { status: 404 });
-    const [[previous]] = await connection.query(
-      `SELECT id_pago_vianda FROM pagos_viandas
-       WHERE id_usuario=? AND id_pedido_vianda=? AND activo=1`,
-      [userId, orderId],
-    );
-    if (previous)
-      throw Object.assign(new Error("El pago de esta entrega ya fue registrado"), {
-        status: 409,
-      });
-  }
-  const remaining = round(Number(series.total_plan) - Number(series.monto_pagado));
-  if (amount > remaining + 0.005)
-    throw Object.assign(new Error(`El pago supera el saldo pendiente de $${remaining.toFixed(2)}`), {
-      status: 400,
+  return series;
+}
+
+async function setDeliveryPayment(
+  connection,
+  userId,
+  orderId,
+  paidValue,
+  methodValue,
+  date,
+  sync = true,
+) {
+  const paid = booleanValue(paidValue);
+  const [[delivery]] = await connection.query(
+    `SELECT v.id_pedido_vianda,v.id_serie,v.fecha_entrega,v.total,v.estado,
+      s.cliente_nombre,s.metodo_pago
+     FROM pedidos_viandas v JOIN series_viandas s ON s.id_serie=v.id_serie
+     WHERE v.id_pedido_vianda=? AND v.id_usuario=? AND v.activo=1 FOR UPDATE`,
+    [orderId, userId],
+  );
+  if (!delivery)
+    throw Object.assign(new Error("Entrega de vianda no encontrada"), {
+      status: 404,
     });
-  const method = paymentMethod(methodValue);
+  if (paid && delivery.estado === "cancelado")
+    throw Object.assign(new Error("No se puede cobrar una entrega cancelada"), {
+      status: 409,
+    });
+  const method = paymentMethod(methodValue || delivery.metodo_pago);
   const paymentDate = fechaValida(date) ? `${date} 12:00:00` : null;
-  const [result] = await connection.query(
-    `INSERT INTO pagos_viandas(id_usuario,id_serie,id_pedido_vianda,monto,metodo_pago,fecha_pago,observaciones)
-     VALUES(?,?,?,?,?,COALESCE(?,NOW()),?)`,
-    [userId, seriesId, orderId, amount, method, paymentDate, String(notes || "").trim() || null],
+  const [[existing]] = await connection.query(
+    `SELECT id_pago_vianda,activo FROM pagos_viandas
+     WHERE id_usuario=? AND id_pedido_vianda=? FOR UPDATE`,
+    [userId, orderId],
   );
-  await connection.query(
-    `INSERT INTO movimientos_caja
-     (id_usuario,tipo,categoria,concepto,monto,metodo_pago,origen,origen_id,anulado,fecha_movimiento,observaciones)
-     VALUES(?,'ingreso','pedido',?,?,?,'vianda',?,0,COALESCE(?,NOW()),?)`,
-    [userId, `${orderId ? "Pago de entrega" : "Pago de viandas"} · ${series.cliente_nombre || "Cliente"}`, amount,
-      method, result.insertId, paymentDate, `Reserva ${seriesId}`],
-  );
-  const newPaid = round(Number(series.monto_pagado) + amount);
-  const completed = newPaid + 0.005 >= Number(series.total_plan);
-  await connection.query(
-    `UPDATE series_viandas SET monto_pagado=?,pagado=?,metodo_pago=?
-     WHERE id_serie=? AND id_usuario=?`,
-    [newPaid, completed ? 1 : 0, method, seriesId, userId],
-  );
-  if (completed) {
+  let paymentId = existing?.id_pago_vianda || null;
+  if (paid && Number(delivery.total) > 0) {
+    if (existing) {
+      await connection.query(
+        `UPDATE pagos_viandas SET monto=?,metodo_pago=?,activo=1,
+         fecha_pago=COALESCE(?,NOW()),observaciones=?
+         WHERE id_pago_vianda=? AND id_usuario=?`,
+        [
+          delivery.total,
+          method,
+          paymentDate,
+          `Cobro de entrega del ${String(delivery.fecha_entrega).slice(0, 10)}`,
+          paymentId,
+          userId,
+        ],
+      );
+    } else {
+      const [result] = await connection.query(
+        `INSERT INTO pagos_viandas
+         (id_usuario,id_serie,id_pedido_vianda,monto,metodo_pago,fecha_pago,observaciones)
+         VALUES(?,?,?,?,?,COALESCE(?,NOW()),?)`,
+        [
+          userId,
+          delivery.id_serie,
+          orderId,
+          delivery.total,
+          method,
+          paymentDate,
+          `Cobro de entrega del ${String(delivery.fecha_entrega).slice(0, 10)}`,
+        ],
+      );
+      paymentId = result.insertId;
+    }
     await connection.query(
-      `UPDATE pedidos_viandas SET pagado=1,metodo_pago=?,fecha_pago=COALESCE(fecha_pago,NOW())
-       WHERE id_serie=? AND id_usuario=? AND activo=1`,
-      [method, seriesId, userId],
+      `INSERT INTO movimientos_caja
+       (id_usuario,tipo,categoria,concepto,monto,metodo_pago,origen,origen_id,anulado,fecha_movimiento,observaciones)
+       VALUES(?,'ingreso','pedido',?,?,?,'vianda',?,0,COALESCE(?,NOW()),?)
+       ON CONFLICT (id_usuario,origen,origen_id) DO UPDATE SET monto=EXCLUDED.monto,metodo_pago=EXCLUDED.metodo_pago,
+       anulado=0,fecha_movimiento=EXCLUDED.fecha_movimiento,observaciones=EXCLUDED.observaciones`,
+      [
+        userId,
+        `Vianda ${delivery.cliente_nombre || "Cliente"} · ${String(delivery.fecha_entrega).slice(0, 10)}`,
+        delivery.total,
+        method,
+        paymentId,
+        paymentDate,
+        `Reserva ${delivery.id_serie}`,
+      ],
     );
-  } else if (delivery && amount + 0.005 >= Number(delivery.total)) {
+  } else if (existing) {
     await connection.query(
-      `UPDATE pedidos_viandas SET pagado=1,metodo_pago=?,fecha_pago=COALESCE(fecha_pago,NOW())
-       WHERE id_pedido_vianda=? AND id_usuario=?`,
-      [method, orderId, userId],
+      "UPDATE pagos_viandas SET activo=0 WHERE id_pago_vianda=? AND id_usuario=?",
+      [paymentId, userId],
+    );
+    await connection.query(
+      `UPDATE movimientos_caja SET anulado=1
+       WHERE id_usuario=? AND origen='vianda' AND origen_id=?`,
+      [userId, paymentId],
     );
   }
-  return { id_pago_vianda: result.insertId, monto: amount, metodo_pago: method, pagado: completed };
+  await connection.query(
+    `UPDATE pedidos_viandas SET pagado=?,metodo_pago=?,
+     fecha_pago=CASE WHEN ?=1 THEN COALESCE(?,fecha_pago,NOW()) ELSE NULL END
+     WHERE id_pedido_vianda=? AND id_usuario=?`,
+    [paid ? 1 : 0, method, paid ? 1 : 0, paymentDate, orderId, userId],
+  );
+  const series = sync
+    ? await syncSeries(connection, userId, delivery.id_serie)
+    : null;
+  return {
+    delivery: {
+      id_pedido_vianda: Number(orderId),
+      pagado: paid,
+      metodo_pago: method,
+    },
+    payment: paymentId
+      ? {
+          id_pago_vianda: paymentId,
+          monto: Number(delivery.total),
+          metodo_pago: method,
+        }
+      : null,
+    series,
+    id_serie: delivery.id_serie,
+  };
 }
 
 async function detailsForOrders(connection, userId, orderIds) {
@@ -303,7 +418,7 @@ exports.saveConfig = async (req, res) => {
     });
   await db.query(
     `INSERT INTO configuraciones_viandas(id_usuario,precio_postre,precio_envio) VALUES(?,?,?)
-     ON DUPLICATE KEY UPDATE precio_postre=VALUES(precio_postre),precio_envio=VALUES(precio_envio)`,
+     ON CONFLICT (id_usuario) DO UPDATE SET precio_postre=EXCLUDED.precio_postre,precio_envio=EXCLUDED.precio_envio`,
     [req.usuario.id_usuario, dessert, shipping],
   );
   res.json({ ok: true, mensaje: "Configuración de viandas actualizada" });
@@ -313,7 +428,9 @@ exports.createType = async (req, res) => {
   const name = String(req.body.nombre || "").trim();
   const price = numero(req.body.precio_base);
   if (!name || name.length > 100 || price === null || price < 0)
-    return res.status(400).json({ ok: false, mensaje: "Nombre o precio inválido" });
+    return res
+      .status(400)
+      .json({ ok: false, mensaje: "Nombre o precio inválido" });
   try {
     const [result] = await db.query(
       "INSERT INTO tipos_vianda(id_usuario,nombre,precio_base) VALUES(?,?,?)",
@@ -321,11 +438,17 @@ exports.createType = async (req, res) => {
     );
     res.status(201).json({
       ok: true,
-      data: { id_tipo_vianda: result.insertId, nombre: name, precio_base: price },
+      data: {
+        id_tipo_vianda: result.insertId,
+        nombre: name,
+        precio_base: price,
+      },
     });
   } catch (error) {
     if (error.code === "ER_DUP_ENTRY")
-      return res.status(409).json({ ok: false, mensaje: "Ese tipo de vianda ya existe" });
+      return res
+        .status(409)
+        .json({ ok: false, mensaje: "Ese tipo de vianda ya existe" });
     throw error;
   }
 };
@@ -334,13 +457,17 @@ exports.updateType = async (req, res) => {
   const name = String(req.body.nombre || "").trim();
   const price = numero(req.body.precio_base);
   if (!name || name.length > 100 || price === null || price < 0)
-    return res.status(400).json({ ok: false, mensaje: "Nombre o precio inválido" });
+    return res
+      .status(400)
+      .json({ ok: false, mensaje: "Nombre o precio inválido" });
   const [result] = await db.query(
     "UPDATE tipos_vianda SET nombre=?,precio_base=? WHERE id_tipo_vianda=? AND id_usuario=? AND activo=1",
     [name, price, req.params.id, req.usuario.id_usuario],
   );
   if (!result.affectedRows)
-    return res.status(404).json({ ok: false, mensaje: "Tipo de vianda no encontrado" });
+    return res
+      .status(404)
+      .json({ ok: false, mensaje: "Tipo de vianda no encontrado" });
   res.json({ ok: true, mensaje: "Tipo de vianda actualizado" });
 };
 
@@ -361,7 +488,9 @@ exports.removeType = async (req, res) => {
     [req.params.id, req.usuario.id_usuario],
   );
   if (!result.affectedRows)
-    return res.status(404).json({ ok: false, mensaje: "Tipo de vianda no encontrado" });
+    return res
+      .status(404)
+      .json({ ok: false, mensaje: "Tipo de vianda no encontrado" });
   res.json({ ok: true, mensaje: "Tipo de vianda eliminado" });
 };
 
@@ -387,11 +516,15 @@ exports.list = async (req, res) => {
   }
   if (req.query.buscar) {
     const term = `%${String(req.query.buscar).trim()}%`;
-    where += " AND (v.cliente_nombre LIKE ? OR v.tipo_nombre LIKE ? OR v.cliente_direccion LIKE ?)";
+    where +=
+      " AND (v.cliente_nombre LIKE ? OR v.tipo_nombre LIKE ? OR v.cliente_direccion LIKE ?)";
     args.push(term, term, term);
   }
   const page = Math.max(entero(Number(req.query.page)) || 1, 1);
-  const limit = Math.min(Math.max(entero(Number(req.query.limit)) || 8, 1), 100);
+  const limit = Math.min(
+    Math.max(entero(Number(req.query.limit)) || 8, 1),
+    100,
+  );
   const [[count]] = await db.query(
     `SELECT COUNT(*) total FROM pedidos_viandas v
      JOIN series_viandas s ON s.id_serie=v.id_serie AND s.id_usuario=v.id_usuario
@@ -410,14 +543,25 @@ exports.list = async (req, res) => {
      LIMIT ? OFFSET ?`,
     [...args, limit, (page - 1) * limit],
   );
-  const details = await detailsForOrders(db, userId, rows.map((row) => row.id_pedido_vianda));
+  const details = await detailsForOrders(
+    db,
+    userId,
+    rows.map((row) => row.id_pedido_vianda),
+  );
   res.json({
     ok: true,
     data: rows.map((row) => ({
       ...row,
-      items: details.filter((detail) => detail.id_pedido_vianda === row.id_pedido_vianda),
+      items: details.filter(
+        (detail) => detail.id_pedido_vianda === row.id_pedido_vianda,
+      ),
     })),
-    meta: { page, limit, total: Number(count.total), total_pages: Math.max(1, Math.ceil(Number(count.total) / limit)) },
+    meta: {
+      page,
+      limit,
+      total: Number(count.total),
+      total_pages: Math.max(1, Math.ceil(Number(count.total) / limit)),
+    },
   });
 };
 
@@ -425,9 +569,13 @@ exports.clients = async (req, res) => {
   const userId = req.usuario.id_usuario;
   const args = [userId];
   let where = "v.id_usuario=? AND v.activo=1 AND s.activo=1";
-  const scope = ["hoy", "proximas", "todas"].includes(req.query.vista) ? req.query.vista : "hoy";
-  if (scope === "hoy") where += " AND v.fecha_entrega=CURDATE() AND v.estado='pendiente'";
-  if (scope === "proximas") where += " AND v.fecha_entrega>=CURDATE() AND v.estado='pendiente'";
+  const scope = ["hoy", "proximas", "todas"].includes(req.query.vista)
+    ? req.query.vista
+    : "hoy";
+  if (scope === "hoy")
+    where += " AND v.fecha_entrega=CURDATE() AND v.estado='pendiente'";
+  if (scope === "proximas")
+    where += " AND v.fecha_entrega>=CURDATE() AND v.estado='pendiente'";
   if (STATES.includes(req.query.estado) && scope === "todas") {
     where += " AND v.estado=?";
     args.push(req.query.estado);
@@ -451,11 +599,13 @@ exports.clients = async (req, res) => {
   const [rows] = await db.query(
     `SELECT v.id_cliente,MAX(v.cliente_nombre) cliente_nombre,
       MAX(v.cliente_telefono) cliente_telefono,MAX(v.cliente_direccion) cliente_direccion,
-      COUNT(*) entregas_visibles,SUM(v.estado='pendiente') pendientes_visibles,
+      COUNT(*) entregas_visibles,SUM(CASE WHEN v.estado='pendiente' THEN 1 ELSE 0 END) pendientes_visibles,
       MIN(CASE WHEN v.estado='pendiente' THEN v.fecha_entrega END) proxima_fecha,
       MIN(CASE WHEN v.estado='pendiente' THEN v.hora_entrega END) proxima_hora,
-      GROUP_CONCAT(DISTINCT v.tipo_nombre ORDER BY v.tipo_nombre SEPARATOR ', ') tipos,
+      STRING_AGG(DISTINCT v.tipo_nombre, ', ' ORDER BY v.tipo_nombre) tipos,
       (SELECT COUNT(*) FROM pedidos_viandas p WHERE p.id_usuario=v.id_usuario AND p.id_cliente=v.id_cliente AND p.activo=1 AND p.estado='pendiente' AND p.fecha_entrega>=CURDATE()) pendientes_totales,
+      (SELECT COALESCE(SUM(sr.total_plan),0) FROM series_viandas sr WHERE sr.id_usuario=v.id_usuario AND sr.id_cliente=v.id_cliente AND sr.activo=1) total_planes,
+      (SELECT COALESCE(SUM(sr.monto_pagado),0) FROM series_viandas sr WHERE sr.id_usuario=v.id_usuario AND sr.id_cliente=v.id_cliente AND sr.activo=1) cobrado_total,
       (SELECT COALESCE(SUM(sr.total_plan-sr.monto_pagado),0) FROM series_viandas sr WHERE sr.id_usuario=v.id_usuario AND sr.id_cliente=v.id_cliente AND sr.activo=1) saldo_pendiente,
       (SELECT COUNT(*) FROM series_viandas sr WHERE sr.id_usuario=v.id_usuario AND sr.id_cliente=v.id_cliente AND sr.activo=1) planes_activos,
       MAX(c.latitud) latitud,MAX(c.longitud) longitud
@@ -464,14 +614,23 @@ exports.clients = async (req, res) => {
      LEFT JOIN clientes c ON c.id_cliente=v.id_cliente AND c.id_usuario=v.id_usuario
      WHERE ${where}
      GROUP BY v.id_cliente,v.id_usuario
-     ORDER BY (proxima_fecha IS NULL) ASC,proxima_fecha ASC,proxima_hora ASC,cliente_nombre ASC
+     ORDER BY
+      (MIN(CASE WHEN v.estado='pendiente' THEN v.fecha_entrega END) IS NULL) ASC,
+      MIN(CASE WHEN v.estado='pendiente' THEN v.fecha_entrega END) ASC,
+      MIN(CASE WHEN v.estado='pendiente' THEN v.hora_entrega END) ASC,
+      MAX(v.cliente_nombre) ASC
      LIMIT ? OFFSET ?`,
     [...args, limit, (page - 1) * limit],
   );
   res.json({
     ok: true,
     data: rows,
-    meta: { page, limit, total: Number(count.total), total_pages: Math.max(1, Math.ceil(Number(count.total) / limit)) },
+    meta: {
+      page,
+      limit,
+      total: Number(count.total),
+      total_pages: Math.max(1, Math.ceil(Number(count.total) / limit)),
+    },
   });
 };
 
@@ -484,7 +643,9 @@ exports.client = async (req, res) => {
     [clientId, userId],
   );
   if (!client)
-    return res.status(404).json({ ok: false, mensaje: "Cliente no encontrado" });
+    return res
+      .status(404)
+      .json({ ok: false, mensaje: "Cliente no encontrado" });
   const [series] = await db.query(
     `SELECT s.*,
       (SELECT COUNT(*) FROM pedidos_viandas v WHERE v.id_serie=s.id_serie AND v.activo=1) cantidad_entregas,
@@ -498,7 +659,11 @@ exports.client = async (req, res) => {
      ORDER BY v.estado='pendiente' DESC,v.fecha_entrega ASC,v.hora_entrega ASC`,
     [userId, clientId],
   );
-  const details = await detailsForOrders(db, userId, deliveries.map((row) => row.id_pedido_vianda));
+  const details = await detailsForOrders(
+    db,
+    userId,
+    deliveries.map((row) => row.id_pedido_vianda),
+  );
   let payments = [];
   if (series.length)
     [payments] = await db.query(
@@ -517,7 +682,9 @@ exports.client = async (req, res) => {
           .filter((delivery) => delivery.id_serie === item.id_serie)
           .map((delivery) => ({
             ...delivery,
-            items: details.filter((detail) => detail.id_pedido_vianda === delivery.id_pedido_vianda),
+            items: details.filter(
+              (detail) => detail.id_pedido_vianda === delivery.id_pedido_vianda,
+            ),
           })),
         pagos: payments.filter((payment) => payment.id_serie === item.id_serie),
       })),
@@ -532,31 +699,63 @@ exports.create = async (req, res) => {
     const userId = req.usuario.id_usuario;
     await ensureConfiguration(connection, userId);
     const values = await orderValues(connection, userId, req.body);
-    const frequency = FREQUENCIES.includes(req.body.frecuencia) ? req.body.frecuencia : "unico";
-    const dates = deliveryDates(req.body.fecha_inicio, req.body.fecha_fin, frequency, req.body.dias_semana);
-    const time = /^([01]\d|2[0-3]):[0-5]\d$/.test(String(req.body.hora_entrega || ""))
+    const frequency = FREQUENCIES.includes(req.body.frecuencia)
+      ? req.body.frecuencia
+      : "unico";
+    const dates = deliveryDates(
+      req.body.fecha_inicio,
+      req.body.fecha_fin,
+      frequency,
+      req.body.dias_semana,
+    );
+    const time = /^([01]\d|2[0-3]):[0-5]\d$/.test(
+      String(req.body.hora_entrega || ""),
+    )
       ? `${req.body.hora_entrega}:00`
       : null;
     if (!time)
-      throw Object.assign(new Error("Hora de entrega inválida"), { status: 400 });
+      throw Object.assign(new Error("Hora de entrega inválida"), {
+        status: 400,
+      });
     const seriesId = randomUUID();
     const totalPlan = round(values.discount.total * dates.length);
     const paidFull = booleanValue(req.body.pagado);
-    const initialPayment = paidFull ? totalPlan : numero(req.body.pago_inicial || 0) || 0;
+    const initialPayment = paidFull ? totalPlan : 0;
     if (initialPayment < 0 || initialPayment > totalPlan)
-      throw Object.assign(new Error("El adelanto inicial es inválido"), { status: 400 });
+      throw Object.assign(new Error("El adelanto inicial es inválido"), {
+        status: 400,
+      });
     const method = paymentMethod(req.body.metodo_pago);
     const notes = String(req.body.observaciones || "").trim() || null;
-    const days = frequency === "unico"
-      ? null
-      : JSON.stringify([...selectedWeekdays(frequency, req.body.dias_semana, new Date(`${dates[0]}T12:00:00Z`))]);
+    const days =
+      frequency === "unico"
+        ? null
+        : JSON.stringify([
+            ...selectedWeekdays(
+              frequency,
+              req.body.dias_semana,
+              new Date(`${dates[0]}T12:00:00Z`),
+            ),
+          ]);
     await connection.query(
       `INSERT INTO series_viandas
        (id_serie,id_usuario,id_cliente,cliente_nombre,cliente_telefono,cliente_direccion,frecuencia,fecha_inicio,fecha_fin,dias_semana_json,metodo_pago,total_plan,monto_pagado,pagado,observaciones)
        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,0,0,?)`,
-      [seriesId, userId, values.client.id_cliente, values.client.nombre,
-        values.client.telefono, values.client.direccion, frequency, dates[0],
-        dates.at(-1), days, method, totalPlan, notes],
+      [
+        seriesId,
+        userId,
+        values.client.id_cliente,
+        values.client.nombre,
+        values.client.telefono,
+        values.client.direccion,
+        frequency,
+        dates[0],
+        dates.at(-1),
+        days,
+        method,
+        totalPlan,
+        notes,
+      ],
     );
     const header = headerFor(values.items);
     const state = req.body.estado === "entregado" ? "entregado" : "pendiente";
@@ -568,41 +767,62 @@ exports.create = async (req, res) => {
           con_postre,precio_postre_unitario,con_envio,costo_envio,subtotal,descuento_tipo,descuento_valor,descuento_importe,total,
           fecha_entrega,hora_entrega,estado,pagado,fecha_pago,metodo_pago,observaciones)
          VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,NULL,?,?)`,
-        [userId, seriesId, values.client.id_cliente, values.client.nombre,
-          values.client.telefono, values.client.direccion, header.idType,
-          header.typeName, header.quantity, header.unitPrice, header.dessert ? 1 : 0,
-          header.dessertPrice, values.shipping ? 1 : 0, values.shippingPrice,
-          values.subtotal, values.discount.type, values.discount.value,
-          values.discount.amount, values.discount.total, deliveryDate, time,
-          state, method, notes],
+        [
+          userId,
+          seriesId,
+          values.client.id_cliente,
+          values.client.nombre,
+          values.client.telefono,
+          values.client.direccion,
+          header.idType,
+          header.typeName,
+          header.quantity,
+          header.unitPrice,
+          header.dessert ? 1 : 0,
+          header.dessertPrice,
+          values.shipping ? 1 : 0,
+          values.shippingPrice,
+          values.subtotal,
+          values.discount.type,
+          values.discount.value,
+          values.discount.amount,
+          values.discount.total,
+          deliveryDate,
+          time,
+          state,
+          method,
+          notes,
+        ],
       );
       ids.push(result.insertId);
       await insertDetails(connection, userId, result.insertId, values.items);
     }
-    if (initialPayment > 0)
-      await insertPayment(connection, userId, seriesId, initialPayment, method,
-        req.body.fecha_pago, req.body.pago_observaciones);
-    else if (totalPlan === 0) {
-      await connection.query(
-        "UPDATE series_viandas SET pagado=1 WHERE id_serie=? AND id_usuario=?",
-        [seriesId, userId],
-      );
-      await connection.query(
-        "UPDATE pedidos_viandas SET pagado=1 WHERE id_serie=? AND id_usuario=?",
-        [seriesId, userId],
-      );
-    }
+    if (paidFull || totalPlan === 0)
+      for (const id of ids)
+        await setDeliveryPayment(
+          connection,
+          userId,
+          id,
+          true,
+          method,
+          req.body.fecha_pago,
+          false,
+        );
+    const series = await syncSeries(connection, userId, seriesId);
     await connection.commit();
     res.status(201).json({
       ok: true,
-      mensaje: dates.length === 1 ? "Pedido de viandas creado" : `${dates.length} entregas programadas`,
+      mensaje:
+        dates.length === 1
+          ? "Pedido de viandas creado"
+          : `${dates.length} entregas programadas`,
       data: {
         id_serie: seriesId,
         pedidos: ids,
         cantidad_entregas: dates.length,
         total_plan: totalPlan,
-        monto_pagado: initialPayment,
-        saldo_pendiente: round(totalPlan - initialPayment),
+        monto_pagado: Number(series.monto_pagado),
+        saldo_pendiente: Number(series.saldo_pendiente),
       },
     });
   } catch (error) {
@@ -625,44 +845,96 @@ exports.update = async (req, res) => {
       [req.params.id, userId],
     );
     if (!current)
-      throw Object.assign(new Error("Pedido de vianda no encontrado"), { status: 404 });
-    if (!fechaValida(req.body.fecha_entrega) || !/^([01]\d|2[0-3]):[0-5]\d$/.test(String(req.body.hora_entrega || "")))
+      throw Object.assign(new Error("Pedido de vianda no encontrado"), {
+        status: 404,
+      });
+    if (
+      !fechaValida(req.body.fecha_entrega) ||
+      !/^([01]\d|2[0-3]):[0-5]\d$/.test(String(req.body.hora_entrega || ""))
+    )
       throw Object.assign(new Error("Fecha u hora inválida"), { status: 400 });
     const values = await orderValues(connection, userId, req.body);
-    const newPlanTotal = round(Number(current.total_plan) - Number(current.total) + values.discount.total);
-    if (Number(current.monto_pagado) > newPlanTotal + 0.005)
-      throw Object.assign(new Error("No se puede reducir el pedido por debajo del monto ya pagado"), {
-        status: 409,
-      });
     const header = headerFor(values.items);
-    const completed = Number(current.monto_pagado) + 0.005 >= newPlanTotal;
-    const state = STATES.includes(req.body.estado) ? req.body.estado : current.estado;
+    const state = STATES.includes(req.body.estado)
+      ? req.body.estado
+      : current.estado;
     const method = paymentMethod(req.body.metodo_pago || current.metodo_pago);
     await connection.query(
       `UPDATE pedidos_viandas SET id_cliente=?,cliente_nombre=?,cliente_telefono=?,cliente_direccion=?,id_tipo_vianda=?,tipo_nombre=?,cantidad=?,precio_unitario=?,
        con_postre=?,precio_postre_unitario=?,con_envio=?,costo_envio=?,subtotal=?,descuento_tipo=?,descuento_valor=?,descuento_importe=?,total=?,fecha_entrega=?,hora_entrega=?,
        estado=?,pagado=?,metodo_pago=?,observaciones=? WHERE id_pedido_vianda=? AND id_usuario=?`,
-      [values.client.id_cliente, values.client.nombre, values.client.telefono,
-        values.client.direccion, header.idType, header.typeName, header.quantity,
-        header.unitPrice, header.dessert ? 1 : 0, header.dessertPrice,
-        values.shipping ? 1 : 0, values.shippingPrice, values.subtotal,
-        values.discount.type, values.discount.value, values.discount.amount,
-        values.discount.total, req.body.fecha_entrega,
-        `${req.body.hora_entrega}:00`, state, completed ? 1 : 0, method,
-        String(req.body.observaciones || "").trim() || null, req.params.id, userId],
+      [
+        values.client.id_cliente,
+        values.client.nombre,
+        values.client.telefono,
+        values.client.direccion,
+        header.idType,
+        header.typeName,
+        header.quantity,
+        header.unitPrice,
+        header.dessert ? 1 : 0,
+        header.dessertPrice,
+        values.shipping ? 1 : 0,
+        values.shippingPrice,
+        values.subtotal,
+        values.discount.type,
+        values.discount.value,
+        values.discount.amount,
+        values.discount.total,
+        req.body.fecha_entrega,
+        `${req.body.hora_entrega}:00`,
+        state,
+        state === "cancelado" ? 0 : current.pagado ? 1 : 0,
+        method,
+        String(req.body.observaciones || "").trim() || null,
+        req.params.id,
+        userId,
+      ],
     );
     await connection.query(
       "DELETE FROM pedido_vianda_detalles WHERE id_pedido_vianda=? AND id_usuario=?",
       [req.params.id, userId],
     );
-    await insertDetails(connection, userId, Number(req.params.id), values.items);
-    await connection.query(
-      `UPDATE series_viandas SET id_cliente=?,cliente_nombre=?,cliente_telefono=?,cliente_direccion=?,total_plan=?,pagado=?,metodo_pago=?
-       WHERE id_serie=? AND id_usuario=?`,
-      [values.client.id_cliente, values.client.nombre, values.client.telefono,
-        values.client.direccion, newPlanTotal, completed ? 1 : 0, method,
-        current.id_serie, userId],
+    await insertDetails(
+      connection,
+      userId,
+      Number(req.params.id),
+      values.items,
     );
+    await connection.query(
+      `UPDATE series_viandas SET id_cliente=?,cliente_nombre=?,cliente_telefono=?,cliente_direccion=?,metodo_pago=?
+       WHERE id_serie=? AND id_usuario=?`,
+      [
+        values.client.id_cliente,
+        values.client.nombre,
+        values.client.telefono,
+        values.client.direccion,
+        method,
+        current.id_serie,
+        userId,
+      ],
+    );
+    if (state === "cancelado" && current.pagado)
+      await setDeliveryPayment(
+        connection,
+        userId,
+        Number(req.params.id),
+        false,
+        method,
+        null,
+        false,
+      );
+    else if (current.pagado)
+      await setDeliveryPayment(
+        connection,
+        userId,
+        Number(req.params.id),
+        true,
+        method,
+        null,
+        false,
+      );
+    await syncSeries(connection, userId, current.id_serie);
     await connection.commit();
     res.json({ ok: true, mensaje: "Entrega de viandas actualizada" });
   } catch (error) {
@@ -676,34 +948,38 @@ exports.update = async (req, res) => {
 exports.state = async (req, res) => {
   if (!STATES.includes(req.body.estado))
     return res.status(400).json({ ok: false, mensaje: "Estado inválido" });
-  const [result] = await db.query(
-    "UPDATE pedidos_viandas SET estado=? WHERE id_pedido_vianda=? AND id_usuario=? AND activo=1",
-    [req.body.estado, req.params.id, req.usuario.id_usuario],
-  );
-  if (!result.affectedRows)
-    return res.status(404).json({ ok: false, mensaje: "Pedido de vianda no encontrado" });
-  const [[row]] = await db.query(
-    "SELECT id_pedido_vianda,estado,pagado,fecha_actualizacion FROM pedidos_viandas WHERE id_pedido_vianda=? AND id_usuario=?",
-    [req.params.id, req.usuario.id_usuario],
-  );
-  res.json({ ok: true, mensaje: "Estado actualizado", data: row });
-};
-
-exports.addPayment = async (req, res) => {
   const connection = await db.getConnection();
   try {
     await connection.beginTransaction();
-    const payment = await insertPayment(connection, req.usuario.id_usuario,
-      req.params.id_serie, req.body.monto, req.body.metodo_pago,
-      req.body.fecha_pago, req.body.observaciones);
-    const [[series]] = await connection.query(
-      `SELECT id_serie,total_plan,monto_pagado,pagado,metodo_pago,
-       GREATEST(total_plan-monto_pagado,0) saldo_pendiente
-       FROM series_viandas WHERE id_serie=? AND id_usuario=?`,
-      [req.params.id_serie, req.usuario.id_usuario],
+    const [[current]] = await connection.query(
+      `SELECT id_pedido_vianda,id_serie,pagado,metodo_pago FROM pedidos_viandas
+       WHERE id_pedido_vianda=? AND id_usuario=? AND activo=1 FOR UPDATE`,
+      [req.params.id, req.usuario.id_usuario],
+    );
+    if (!current)
+      throw Object.assign(new Error("Pedido de vianda no encontrado"), {
+        status: 404,
+      });
+    await connection.query(
+      "UPDATE pedidos_viandas SET estado=? WHERE id_pedido_vianda=? AND id_usuario=?",
+      [req.body.estado, req.params.id, req.usuario.id_usuario],
+    );
+    if (req.body.estado === "cancelado")
+      await setDeliveryPayment(
+        connection,
+        req.usuario.id_usuario,
+        Number(req.params.id),
+        false,
+        current.metodo_pago,
+        null,
+      );
+    const [[row]] = await connection.query(
+      `SELECT id_pedido_vianda,estado,pagado,fecha_actualizacion
+       FROM pedidos_viandas WHERE id_pedido_vianda=? AND id_usuario=?`,
+      [req.params.id, req.usuario.id_usuario],
     );
     await connection.commit();
-    res.status(201).json({ ok: true, mensaje: "Pago registrado", data: { payment, series } });
+    res.json({ ok: true, mensaje: "Estado actualizado", data: row });
   } catch (error) {
     await connection.rollback();
     throw error;
@@ -712,43 +988,25 @@ exports.addPayment = async (req, res) => {
   }
 };
 
-exports.dailyPayment = async (req, res) => {
+async function changeDeliveryPayment(req, res, forcedValue = null) {
   const connection = await db.getConnection();
   try {
     await connection.beginTransaction();
-    const userId = req.usuario.id_usuario;
-    const [[delivery]] = await connection.query(
-      `SELECT v.id_pedido_vianda,v.id_serie,v.total,s.total_plan,s.monto_pagado,s.metodo_pago
-       FROM pedidos_viandas v JOIN series_viandas s ON s.id_serie=v.id_serie
-       WHERE v.id_pedido_vianda=? AND v.id_usuario=? AND v.activo=1 AND v.estado<>'cancelado' FOR UPDATE`,
-      [req.params.id, userId],
-    );
-    if (!delivery)
-      throw Object.assign(new Error("Entrega de vianda no encontrada"), { status: 404 });
-    const remaining = round(Number(delivery.total_plan) - Number(delivery.monto_pagado));
-    if (remaining <= 0)
-      throw Object.assign(new Error("La reserva ya está pagada por completo"), { status: 409 });
-    const amount = Math.min(Number(delivery.total), remaining);
-    const payment = await insertPayment(
+    const paid =
+      forcedValue === null ? booleanValue(req.body.pagado) : forcedValue;
+    const result = await setDeliveryPayment(
       connection,
-      userId,
-      delivery.id_serie,
-      amount,
-      req.body.metodo_pago || delivery.metodo_pago,
+      req.usuario.id_usuario,
+      Number(req.params.id),
+      paid,
+      req.body.metodo_pago,
       req.body.fecha_pago,
-      req.body.observaciones || `Pago correspondiente a la entrega #${delivery.id_pedido_vianda}`,
-      delivery.id_pedido_vianda,
-    );
-    const [[series]] = await connection.query(
-      `SELECT total_plan,monto_pagado,pagado,GREATEST(total_plan-monto_pagado,0) saldo_pendiente
-       FROM series_viandas WHERE id_serie=? AND id_usuario=?`,
-      [delivery.id_serie, userId],
     );
     await connection.commit();
-    res.status(201).json({
+    res.json({
       ok: true,
-      mensaje: `Pago diario de $${amount.toFixed(2)} registrado`,
-      data: { payment, series },
+      mensaje: paid ? "Cobro del día registrado" : "Cobro del día revertido",
+      data: result,
     });
   } catch (error) {
     await connection.rollback();
@@ -756,57 +1014,48 @@ exports.dailyPayment = async (req, res) => {
   } finally {
     connection.release();
   }
-};
+}
 
-exports.paid = async (req, res) => {
-  if (!booleanValue(req.body.pagado))
-    return res.status(409).json({
-      ok: false,
-      mensaje: "Los pagos parciales forman un historial y no se desmarcan. Registra el saldo pendiente o corrige el movimiento desde caja.",
-    });
-  const [[order]] = await db.query(
-    `SELECT v.id_serie,s.total_plan,s.monto_pagado,s.metodo_pago FROM pedidos_viandas v
-     JOIN series_viandas s ON s.id_serie=v.id_serie
-     WHERE v.id_pedido_vianda=? AND v.id_usuario=? AND v.activo=1`,
-    [req.params.id, req.usuario.id_usuario],
-  );
-  if (!order)
-    return res.status(404).json({ ok: false, mensaje: "Pedido de vianda no encontrado" });
-  const remaining = round(Number(order.total_plan) - Number(order.monto_pagado));
-  if (remaining <= 0)
-    return res.json({ ok: true, mensaje: "La reserva ya está pagada" });
-  req.params.id_serie = order.id_serie;
-  req.body.monto = remaining;
-  req.body.metodo_pago = req.body.metodo_pago || order.metodo_pago;
-  return exports.addPayment(req, res);
-};
+exports.addPayment = async (_req, res) =>
+  res.status(409).json({
+    ok: false,
+    mensaje: "Los adelantos se registran marcando las fechas abonadas",
+  });
+
+exports.dailyPayment = async (req, res) =>
+  changeDeliveryPayment(req, res, true);
+
+exports.paid = async (req, res) => changeDeliveryPayment(req, res);
 
 exports.remove = async (req, res) => {
   const connection = await db.getConnection();
   try {
     await connection.beginTransaction();
     const [[order]] = await connection.query(
-      `SELECT v.id_serie,v.total,s.total_plan,s.monto_pagado FROM pedidos_viandas v
+      `SELECT v.id_serie,v.total,v.pagado,v.metodo_pago,s.total_plan,s.monto_pagado FROM pedidos_viandas v
        JOIN series_viandas s ON s.id_serie=v.id_serie
        WHERE v.id_pedido_vianda=? AND v.id_usuario=? AND v.activo=1 FOR UPDATE`,
       [req.params.id, req.usuario.id_usuario],
     );
     if (!order)
-      throw Object.assign(new Error("Pedido de vianda no encontrado"), { status: 404 });
-    const newTotal = round(Number(order.total_plan) - Number(order.total));
-    if (Number(order.monto_pagado) > newTotal + 0.005)
-      throw Object.assign(new Error("No se puede eliminar: el monto pagado superaría el nuevo total"), {
-        status: 409,
+      throw Object.assign(new Error("Pedido de vianda no encontrado"), {
+        status: 404,
       });
+    if (order.pagado)
+      await setDeliveryPayment(
+        connection,
+        req.usuario.id_usuario,
+        Number(req.params.id),
+        false,
+        order.metodo_pago,
+        null,
+        false,
+      );
     await connection.query(
       "UPDATE pedidos_viandas SET activo=0,estado='cancelado' WHERE id_pedido_vianda=? AND id_usuario=?",
       [req.params.id, req.usuario.id_usuario],
     );
-    await connection.query(
-      `UPDATE series_viandas SET total_plan=?,pagado=(monto_pagado>=?)
-       WHERE id_serie=? AND id_usuario=?`,
-      [newTotal, newTotal, order.id_serie, req.usuario.id_usuario],
-    );
+    await syncSeries(connection, req.usuario.id_usuario, order.id_serie);
     await connection.commit();
     res.json({ ok: true, mensaje: "Entrega eliminada" });
   } catch (error) {
