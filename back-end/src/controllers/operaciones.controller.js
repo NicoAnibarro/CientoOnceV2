@@ -52,7 +52,7 @@ async function cajaPedido(
       `INSERT INTO movimientos_caja
       (id_usuario,tipo,categoria,concepto,monto,metodo_pago,origen,origen_id,anulado)
       VALUES(?,'ingreso','pedido',?,?,?,'pedido',?,0)
-      ON CONFLICT (id_usuario,origen,origen_id) DO UPDATE SET monto=EXCLUDED.monto,metodo_pago=EXCLUDED.metodo_pago,anulado=0,fecha_movimiento=NOW()`,
+      ON CONFLICT (id_usuario,origen,origen_id) DO UPDATE SET monto=EXCLUDED.monto,metodo_pago=EXCLUDED.metodo_pago,anulado=0,fecha_movimiento=CASE WHEN movimientos_caja.anulado=1 THEN NOW() ELSE movimientos_caja.fecha_movimiento END`,
       [
         userId,
         `Pago de pedido #${orderId}`,
@@ -148,7 +148,13 @@ async function descontarStock(connection, userId, orderId) {
   }
 }
 
-async function crearDetalles(connection, userId, orderId, items) {
+async function crearDetalles(
+  connection,
+  userId,
+  orderId,
+  items,
+  previous = [],
+) {
   if (!Array.isArray(items) || !items.length)
     throw Object.assign(new Error("Agrega al menos un producto"), {
       status: 400,
@@ -161,13 +167,17 @@ async function crearDetalles(connection, userId, orderId, items) {
     const quantity = entero(Number(item.cantidad));
     if (!quantity || quantity < 1)
       throw Object.assign(new Error("Cantidad inválida"), { status: 400 });
+    const historic = previous.find(
+      (detail) => Number(detail.id_producto) === Number(item.id_producto),
+    );
     const [[product]] = await connection.query(
-      "SELECT id_producto,nombre,precio_venta FROM productos WHERE id_producto=? AND id_usuario=? AND activo=1",
-      [item.id_producto, userId],
+      "SELECT id_producto,nombre,precio_venta FROM productos WHERE id_producto=? AND id_usuario=? AND (activo=1 OR ?=1)",
+      [item.id_producto, userId, historic ? 1 : 0],
     );
     if (!product)
       throw Object.assign(new Error("Producto no encontrado"), { status: 404 });
-    const subtotal = Number((product.precio_venta * quantity).toFixed(2));
+    const unitPrice = Number(historic?.precio_unitario ?? product.precio_venta);
+    const subtotal = Number((unitPrice * quantity).toFixed(2));
     total += subtotal;
     await connection.query(
       `INSERT INTO pedido_detalles
@@ -177,8 +187,8 @@ async function crearDetalles(connection, userId, orderId, items) {
         userId,
         orderId,
         product.id_producto,
-        product.nombre,
-        product.precio_venta,
+        historic?.producto_nombre ?? product.nombre,
+        unitPrice,
         quantity,
         subtotal,
       ],
@@ -327,6 +337,10 @@ exports.editarPedido = async (req, res) => {
     );
     if (!client)
       throw Object.assign(new Error("Cliente no encontrado"), { status: 404 });
+    const [previousDetails] = await connection.query(
+      "SELECT * FROM pedido_detalles WHERE id_pedido=? AND id_usuario=?",
+      [orderId, userId],
+    );
     await restaurarStock(connection, userId, orderId);
     await connection.query(
       "DELETE FROM pedido_detalles WHERE id_pedido=? AND id_usuario=?",
@@ -337,6 +351,7 @@ exports.editarPedido = async (req, res) => {
       userId,
       orderId,
       req.body.detalles,
+      previousDetails,
     );
     const state = req.body.estado || "pendiente";
     if (!["pendiente", "entregado", "cancelado"].includes(state))
@@ -764,9 +779,15 @@ exports.dashboard = async (req, res) => {
       usuario: userResult[0][0] || null,
       pedidos_proximos: ordersResult[0],
       resumen: {
-        ventas_hoy: Number(salesResult[0][0].total),
-        operaciones_hoy: Number(salesResult[0][0].cantidad),
-        balance_caja: Number(cashResult[0][0].balance),
+        ...(["propietario", "administrador"].includes(req.usuario.rol)
+          ? {
+              ventas_hoy: Number(salesResult[0][0].total),
+              operaciones_hoy: Number(salesResult[0][0].cantidad),
+            }
+          : {}),
+        ...(["propietario", "administrador", "caja"].includes(req.usuario.rol)
+          ? { balance_caja: Number(cashResult[0][0].balance) }
+          : {}),
         pedidos_pendientes: Number(pendingResult[0][0].cantidad),
         entregas_hoy: Number(todayResult[0][0].cantidad),
       },
@@ -904,9 +925,14 @@ exports.crearCategoria = async (req, res) => {
       .json({ ok: false, mensaje: "Nombre de categoría inválido" });
   try {
     const [result] = await db.query(
-      "INSERT INTO categorias_productos(id_usuario,nombre) VALUES(?,?)",
+      `INSERT INTO categorias_productos(id_usuario,nombre) VALUES(?,?)
+       ON CONFLICT (id_usuario,nombre) DO UPDATE SET activo=1 WHERE categorias_productos.activo=0`,
       [req.usuario.id_usuario, nombre],
     );
+    if (!result.affectedRows)
+      return res
+        .status(409)
+        .json({ ok: false, mensaje: "Esa categoría ya existe" });
     res.status(201).json({
       ok: true,
       mensaje: "Categoría creada",
@@ -1043,12 +1069,12 @@ exports.informes = async (req, res) => {
     ),
   }));
   const [topProducts] = await db.query(
-    `SELECT pd.producto_nombre nombre,SUM(pd.cantidad) cantidad,SUM(pd.subtotal) importe FROM pedido_detalles pd JOIN pedidos p ON p.id_pedido=pd.id_pedido WHERE p.id_usuario=? AND p.activo=1 AND p.estado='entregado' GROUP BY pd.producto_nombre ORDER BY cantidad DESC LIMIT 5`,
-    [userId],
+    `SELECT pd.producto_nombre nombre,SUM(pd.cantidad) cantidad,SUM(pd.subtotal) importe FROM pedido_detalles pd JOIN pedidos p ON p.id_pedido=pd.id_pedido WHERE p.id_usuario=? AND p.activo=1 AND p.estado='entregado' ${orderWhere} GROUP BY pd.producto_nombre ORDER BY cantidad DESC LIMIT 5`,
+    orderArgs,
   );
   const [topSupplies] = await db.query(
-    `SELECT cd.insumo_nombre nombre,SUM(cd.cantidad) cantidad,SUM(cd.subtotal) importe FROM compra_detalles cd JOIN compras c ON c.id_compra=cd.id_compra WHERE c.id_usuario=? AND c.activo=1 GROUP BY cd.insumo_nombre ORDER BY cantidad DESC LIMIT 5`,
-    [userId],
+    `SELECT cd.insumo_nombre nombre,SUM(cd.cantidad) cantidad,SUM(cd.subtotal) importe FROM compra_detalles cd JOIN compras c ON c.id_compra=cd.id_compra WHERE c.id_usuario=? AND c.activo=1 ${purchaseWhere} GROUP BY cd.insumo_nombre ORDER BY cantidad DESC LIMIT 5`,
+    purchaseArgs,
   );
   const ventasPedidos = orders
     .filter((item) => item.estado === "entregado")
@@ -1057,9 +1083,11 @@ exports.informes = async (req, res) => {
     .filter((item) => item.estado === "entregado")
     .reduce((sum, item) => sum + Number(item.total), 0);
   const compras = purchases.reduce((sum, item) => sum + Number(item.total), 0);
+  const capitalArgs = [userId];
+  const capitalWhere = filtrosFecha(req, "DATE(fecha_movimiento)", capitalArgs);
   const [[capital]] = await db.query(
-    "SELECT COALESCE(SUM(CASE WHEN tipo='ingreso' THEN monto ELSE -monto END),0) total FROM movimientos_caja WHERE id_usuario=? AND categoria='capital' AND anulado=0",
-    [userId],
+    `SELECT COALESCE(SUM(CASE WHEN tipo='ingreso' THEN monto ELSE -monto END),0) total FROM movimientos_caja WHERE id_usuario=? AND categoria='capital' AND anulado=0 ${capitalWhere}`,
+    capitalArgs,
   );
   res.json({
     ok: true,

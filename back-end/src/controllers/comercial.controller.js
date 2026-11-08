@@ -64,17 +64,15 @@ exports.crearCierre = async (req, res) => {
       String(req.body.observaciones || "").trim() || null,
     ],
   );
-  res
-    .status(201)
-    .json({
-      ok: true,
-      mensaje: "Caja cerrada",
-      data: {
-        efectivo_esperado: expected,
-        efectivo_contado: counted,
-        diferencia: difference,
-      },
-    });
+  res.status(201).json({
+    ok: true,
+    mensaje: "Caja cerrada",
+    data: {
+      efectivo_esperado: expected,
+      efectivo_contado: counted,
+      diferencia: difference,
+    },
+  });
 };
 exports.cierres = async (req, res) => {
   const [rows] = await db.query(
@@ -177,26 +175,50 @@ exports.crearEmpleado = async (req, res) => {
   if (
     !name ||
     !["administrador", "caja", "ventas", "reparto"].includes(role) ||
-    pin.length < 4
+    !/^\d{4,12}$/.test(pin) ||
+    name.length > 100
   )
-    return res
-      .status(400)
-      .json({
-        ok: false,
-        mensaje: "Completá nombre, rol y un PIN de al menos 4 dígitos",
-      });
-  const hash = await bcrypt.hash(pin, 10);
-  const [result] = await db.query(
-    "INSERT INTO empleados(id_usuario,nombre,rol,permisos_json,pin_hash) VALUES(?,?,?,?,?)",
-    [
-      req.usuario.id_usuario,
-      name,
-      role,
-      JSON.stringify(req.body.permisos || []),
-      hash,
-    ],
-  );
-  res.status(201).json({ ok: true, data: { id_empleado: result.insertId } });
+    return res.status(400).json({
+      ok: false,
+      mensaje: "Completá nombre, rol y un PIN de al menos 4 dígitos",
+    });
+  const connection = await db.getConnection();
+  try {
+    await connection.beginTransaction();
+    await connection.query(
+      "SELECT id_usuario FROM usuarios WHERE id_usuario=? FOR UPDATE",
+      [req.usuario.id_usuario],
+    );
+    const [employees] = await connection.query(
+      "SELECT pin_hash FROM empleados WHERE id_usuario=? AND activo=1",
+      [req.usuario.id_usuario],
+    );
+    for (const employee of employees) {
+      if (await bcrypt.compare(pin, employee.pin_hash))
+        throw Object.assign(
+          new Error("Ese PIN ya está asignado a otro empleado"),
+          { status: 409 },
+        );
+    }
+    const hash = await bcrypt.hash(pin, 10);
+    const [result] = await connection.query(
+      "INSERT INTO empleados(id_usuario,nombre,rol,permisos_json,pin_hash) VALUES(?,?,?,?,?)",
+      [
+        req.usuario.id_usuario,
+        name,
+        role,
+        JSON.stringify(req.body.permisos || []),
+        hash,
+      ],
+    );
+    await connection.commit();
+    res.status(201).json({ ok: true, data: { id_empleado: result.insertId } });
+  } catch (error) {
+    await connection.rollback();
+    throw error;
+  } finally {
+    connection.release();
+  }
 };
 exports.eliminarEmpleado = async (req, res) => {
   await db.query(
@@ -207,7 +229,7 @@ exports.eliminarEmpleado = async (req, res) => {
 };
 exports.config = async (req, res) => {
   const [[row]] = await db.query(
-    "SELECT id_usuario,nombre_negocio,telefono,direccion,cuit,mercado_pago_activo,arca_activo,arca_ambiente,arca_punto_venta,paleta_visual,paleta_app,logo_mime,TO_BASE64(logo_imagen) logo_base64,logo_imagen IS NOT NULL tiene_logo,fecha_actualizacion FROM configuraciones_comerciales WHERE id_usuario=?",
+    "SELECT id_usuario,nombre_negocio,telefono,direccion,cuit,mercado_pago_activo,arca_activo,arca_ambiente,arca_punto_venta,paleta_visual,paleta_app,logo_mime,encode(logo_imagen,'base64') logo_base64,logo_imagen IS NOT NULL tiene_logo,fecha_actualizacion FROM configuraciones_comerciales WHERE id_usuario=?",
     [req.usuario.id_usuario],
   );
   res.json({
@@ -268,12 +290,10 @@ exports.guardarConfig = async (req, res) => {
 };
 exports.mercadoPago = async (req, res) => {
   if (!process.env.MERCADO_PAGO_ACCESS_TOKEN)
-    return res
-      .status(409)
-      .json({
-        ok: false,
-        mensaje: "Falta configurar MERCADO_PAGO_ACCESS_TOKEN en el servidor",
-      });
+    return res.status(409).json({
+      ok: false,
+      mensaje: "Falta configurar MERCADO_PAGO_ACCESS_TOKEN en el servidor",
+    });
   const amount = numero(req.body.monto),
     description = String(req.body.descripcion || "Cobro Ciento Once");
   if (!amount || amount <= 0)
@@ -306,16 +326,14 @@ exports.mercadoPago = async (req, res) => {
       new Error(data.message || "Mercado Pago rechazó la operación"),
       { status: 502 },
     );
-  res
-    .status(201)
-    .json({
-      ok: true,
-      data: {
-        id: data.id,
-        url: data.init_point,
-        url_prueba: data.sandbox_init_point,
-      },
-    });
+  res.status(201).json({
+    ok: true,
+    data: {
+      id: data.id,
+      url: data.init_point,
+      url_prueba: data.sandbox_init_point,
+    },
+  });
 };
 exports.mercadoPagoWebhook = async (req, res) => {
   res.sendStatus(200);

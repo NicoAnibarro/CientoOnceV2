@@ -50,6 +50,10 @@ async function run() {
             ...process.env,
             DB_SCHEMA: schemaName,
             REQUIRE_EMAIL_VERIFICATION: "false",
+            EMAIL_DELIVERY_ENABLED: "false",
+            JWT_SECRET:
+              process.env.JWT_SECRET ||
+              require("node:crypto").randomBytes(48).toString("hex"),
             NODE_ENV: "test",
           },
         });

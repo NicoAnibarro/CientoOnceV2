@@ -49,6 +49,7 @@ import { useAuth } from "../context/AuthContext";
 import { useAppTheme } from "../context/ThemeContext";
 import colors, { registerThemeListener } from "../theme/colors";
 import LocationPicker from "../components/LocationPicker";
+import { canAccessScreen } from "../utils/permissions";
 
 const PAGE_SIZE = 6;
 const PRIVACY_URL = `${API_BASE_URL.replace(/\/api\/?$/, "")}/api/privacidad`;
@@ -940,7 +941,9 @@ export function Home({ navigation }) {
   useFocusEffect(
     useCallback(() => {
       let active = true;
-      load().catch(() => {});
+      load().catch((error) =>
+        Alert.alert("No se pudo cargar el inicio", message(error)),
+      );
       return () => {
         active = false;
       };
@@ -980,29 +983,33 @@ export function Home({ navigation }) {
             <IconButton icon="menu" active onPress={() => setMenu(true)} />
           }
         />
-        <View style={s.dashboardHero}>
-          <View style={{ flex: 1 }}>
-            <Text style={s.dashboardEyebrow}>RESUMEN DE HOY</Text>
-            <Text style={s.dashboardHeroValue}>
-              {money(summary.ventas_hoy)}
-            </Text>
-            <Text style={s.dashboardHeroText}>
-              {summary.operaciones_hoy || 0} pedidos registrados hoy
-            </Text>
+        {canManage ? (
+          <View style={s.dashboardHero}>
+            <View style={{ flex: 1 }}>
+              <Text style={s.dashboardEyebrow}>RESUMEN DE HOY</Text>
+              <Text style={s.dashboardHeroValue}>
+                {money(summary.ventas_hoy)}
+              </Text>
+              <Text style={s.dashboardHeroText}>
+                {summary.operaciones_hoy || 0} pedidos registrados hoy
+              </Text>
+            </View>
+            <View style={s.dashboardHeroIcon}>
+              <Ionicons name="trending-up" size={26} color="#FFF" />
+            </View>
           </View>
-          <View style={s.dashboardHeroIcon}>
-            <Ionicons name="trending-up" size={26} color="#FFF" />
-          </View>
-        </View>
+        ) : null}
         <View style={s.metricGrid}>
-          <DashboardMetric
-            icon="wallet-outline"
-            label="Caja actual"
-            value={money(summary.balance_caja)}
-            detail="Balance acumulado"
-            tone="dark"
-            onPress={canUseCash ? () => go("Caja") : undefined}
-          />
+          {canUseCash ? (
+            <DashboardMetric
+              icon="wallet-outline"
+              label="Caja actual"
+              value={money(summary.balance_caja)}
+              detail="Balance acumulado"
+              tone="dark"
+              onPress={canUseCash ? () => go("Caja") : undefined}
+            />
+          ) : null}
           <DashboardMetric
             icon="time-outline"
             label="Pendientes"
@@ -1118,13 +1125,7 @@ export function Home({ navigation }) {
               ["business-outline", "Centro comercial", "CentroComercial"],
               ["help-circle-outline", "Ayuda", "Ayuda"],
             ]
-              .filter(
-                ([, , route]) =>
-                  !["CentroComercial", "Stock"].includes(route) ||
-                  ["propietario", "administrador"].includes(
-                    session?.usuario?.rol || "propietario",
-                  ),
-              )
+              .filter(([, , route]) => canAccessScreen(currentRole, route))
               .map(([icon, label, route]) => (
                 <Pressable
                   key={route}
@@ -1567,6 +1568,10 @@ function LegacyCrudModal({
 }
 
 export function CrudList({ route, navigation }) {
+  const { session } = useAuth();
+  const role = session?.usuario?.rol || "propietario";
+  const manager = ["propietario", "administrador"].includes(role);
+  const canWrite = manager || (route.name === "Clientes" && role === "ventas");
   const config = crudConfig[route.name],
     isProducts = route.name === "Productos";
   const [rows, setRows] = useState([]),
@@ -1666,18 +1671,20 @@ export function CrudList({ route, navigation }) {
         title={config.title}
         subtitle={`${filtered.length} registros`}
         action={
-          <IconButton
-            icon="add"
-            active
-            onPress={() => {
-              setEditing(null);
-              setForm({
-                ...config.defaults,
-                categoria: categories[0]?.nombre || config.defaults.categoria,
-              });
-              setFormOpen(true);
-            }}
-          />
+          canWrite ? (
+            <IconButton
+              icon="add"
+              active
+              onPress={() => {
+                setEditing(null);
+                setForm({
+                  ...config.defaults,
+                  categoria: categories[0]?.nombre || config.defaults.categoria,
+                });
+                setFormOpen(true);
+              }}
+            />
+          ) : null
         }
       />
       {isProducts ? (
@@ -1703,13 +1710,15 @@ export function CrudList({ route, navigation }) {
               </Pressable>
             ))}
           </ScrollView>
-          <Button
-            compact
-            secondary
-            icon="add-circle-outline"
-            title="Administrar categorías"
-            onPress={() => navigation.navigate("CategoriasProductos")}
-          />
+          {manager ? (
+            <Button
+              compact
+              secondary
+              icon="add-circle-outline"
+              title="Administrar categorías"
+              onPress={() => navigation.navigate("CategoriasProductos")}
+            />
+          ) : null}
         </>
       ) : null}
       <SearchToolbar
@@ -1783,23 +1792,27 @@ export function CrudList({ route, navigation }) {
                     }
                   />
                 ) : null}
-                <Button
-                  compact
-                  secondary
-                  icon="create-outline"
-                  title="Editar"
-                  style={{ flex: 1 }}
-                  onPress={() => {
-                    setEditing(id);
-                    setForm({ ...item });
-                    setFormOpen(true);
-                  }}
-                />
-                <IconButton
-                  danger
-                  icon="trash-outline"
-                  onPress={() => remove(id)}
-                />
+                {canWrite ? (
+                  <Button
+                    compact
+                    secondary
+                    icon="create-outline"
+                    title="Editar"
+                    style={{ flex: 1 }}
+                    onPress={() => {
+                      setEditing(id);
+                      setForm({ ...item });
+                      setFormOpen(true);
+                    }}
+                  />
+                ) : null}
+                {manager ? (
+                  <IconButton
+                    danger
+                    icon="trash-outline"
+                    onPress={() => remove(id)}
+                  />
+                ) : null}
               </View>
             </Card>
           );
@@ -2048,6 +2061,12 @@ function StatusPill({ active, text }) {
 }
 
 export function Pedidos({ navigation }) {
+  const { session } = useAuth();
+  const role = session?.usuario?.rol || "propietario";
+  const manager = ["propietario", "administrador"].includes(role);
+  const canSell = manager || role === "ventas";
+  const canDeliver = canSell || role === "reparto";
+  const canPay = canSell || role === "caja";
   const [rows, setRows] = useState([]);
   const [updating, setUpdating] = useState({});
   const loadSequence = useRef(0);
@@ -2199,11 +2218,13 @@ export function Pedidos({ navigation }) {
               title="Pedidos"
               subtitle={`${filtered.length} pedidos`}
               action={
-                <IconButton
-                  icon="add"
-                  active
-                  onPress={() => navigation.navigate("NuevoPedido")}
-                />
+                canSell ? (
+                  <IconButton
+                    icon="add"
+                    active
+                    onPress={() => navigation.navigate("NuevoPedido")}
+                  />
+                ) : null
               }
             />
             <Input
@@ -2289,7 +2310,11 @@ export function Pedidos({ navigation }) {
             <View style={s.spaceBetween}>
               <Pressable
                 onPress={() => toggleDelivered(item)}
-                disabled={!!updating[item.id_pedido]}
+                disabled={
+                  !!updating[item.id_pedido] ||
+                  !canDeliver ||
+                  item.estado === "cancelado"
+                }
                 style={[
                   s.deliveryButton,
                   item.estado === "entregado" && s.deliveryActive,
@@ -2318,7 +2343,11 @@ export function Pedidos({ navigation }) {
                 <Switch
                   trackColor={{ true: colors.primary }}
                   value={!!item.pagado}
-                  disabled={!!updating[item.id_pedido]}
+                  disabled={
+                    !!updating[item.id_pedido] ||
+                    !canPay ||
+                    item.estado === "cancelado"
+                  }
                   onValueChange={(value) => togglePaid(item, value)}
                 />
               </View>
@@ -2343,41 +2372,52 @@ export function Pedidos({ navigation }) {
                   )
                 }
               />
-              <Button
-                compact
-                secondary
-                icon="create-outline"
-                title="Editar"
-                style={{ flex: 1 }}
-                onPress={() =>
-                  navigation.navigate("NuevoPedido", {
-                    idPedido: item.id_pedido,
-                  })
-                }
-              />
-              <IconButton
-                danger
-                icon="trash-outline"
-                onPress={() =>
-                  Alert.alert(
-                    "Eliminar pedido",
-                    "¿Eliminar y restaurar su stock?",
-                    [
-                      { text: "Cancelar" },
-                      {
-                        text: "Eliminar",
-                        style: "destructive",
-                        onPress: async () => {
-                          await api.patch(
-                            `/pedidos/${item.id_pedido}/desactivar`,
-                          );
-                          load();
+              {canSell ? (
+                <Button
+                  compact
+                  secondary
+                  icon="create-outline"
+                  title="Editar"
+                  style={{ flex: 1 }}
+                  onPress={() =>
+                    navigation.navigate("NuevoPedido", {
+                      idPedido: item.id_pedido,
+                    })
+                  }
+                />
+              ) : null}
+              {manager ? (
+                <IconButton
+                  danger
+                  icon="trash-outline"
+                  onPress={() =>
+                    Alert.alert(
+                      "Eliminar pedido",
+                      "¿Eliminar y restaurar su stock?",
+                      [
+                        { text: "Cancelar" },
+                        {
+                          text: "Eliminar",
+                          style: "destructive",
+                          onPress: async () => {
+                            try {
+                              await api.patch(
+                                `/pedidos/${item.id_pedido}/desactivar`,
+                              );
+                              load();
+                            } catch (error) {
+                              Alert.alert(
+                                "No se pudo eliminar",
+                                message(error),
+                              );
+                            }
+                          },
                         },
-                      },
-                    ],
-                  )
-                }
-              />
+                      ],
+                    )
+                  }
+                />
+              ) : null}
             </View>
           </Card>
         )}
@@ -2577,6 +2617,10 @@ export function Stock() {
 }
 
 function CajaContent({ navigation }) {
+  const { session } = useAuth();
+  const manager = ["propietario", "administrador"].includes(
+    session?.usuario?.rol || "propietario",
+  );
   const [summary, setSummary] = useState(null);
   const [rows, setRows] = useState([]);
   const [type, setType] = useState("");
@@ -2693,11 +2737,13 @@ function CajaContent({ navigation }) {
               title="Caja"
               subtitle="Resumen de tu negocio"
               action={
-                <IconButton
-                  icon="cart-outline"
-                  active
-                  onPress={() => navigation.navigate("NuevaCompra")}
-                />
+                manager ? (
+                  <IconButton
+                    icon="cart-outline"
+                    active
+                    onPress={() => navigation.navigate("NuevaCompra")}
+                  />
+                ) : null
               }
             />
             <View style={s.balanceCard}>
@@ -3219,16 +3265,22 @@ function LegacyNuevoPedido({ navigation, route }) {
 }
 
 export function Caja(props) {
+  const { session } = useAuth();
+  const manager = ["propietario", "administrador"].includes(
+    session?.usuario?.rol || "propietario",
+  );
   return (
     <View style={{ flex: 1 }}>
       <CajaContent {...props} />
-      <Pressable
-        style={s.reportFab}
-        onPress={() => props.navigation.navigate("Informes")}
-      >
-        <Ionicons name="stats-chart" size={19} color="#FFF" />
-        <Text style={s.reportFabText}>Informes</Text>
-      </Pressable>
+      {manager ? (
+        <Pressable
+          style={s.reportFab}
+          onPress={() => props.navigation.navigate("Informes")}
+        >
+          <Ionicons name="stats-chart" size={19} color="#FFF" />
+          <Text style={s.reportFabText}>Informes</Text>
+        </Pressable>
+      ) : null}
     </View>
   );
 }
@@ -3274,6 +3326,23 @@ export function NuevoPedido({ navigation, route }) {
         setCategories(categoryResponse.data.data || []);
         if (order) {
           const v = order.data.data;
+          setProducts((current) => {
+            const byId = new Map(
+              current.map((product) => [product.id_producto, product]),
+            );
+            for (const detail of v.detalles) {
+              byId.set(detail.id_producto, {
+                ...(byId.get(detail.id_producto) || {
+                  categoria: "Pedido existente",
+                  stock_actual: 0,
+                }),
+                id_producto: detail.id_producto,
+                nombre: detail.producto_nombre,
+                precio_venta: detail.precio_unitario,
+              });
+            }
+            return [...byId.values()];
+          });
           setClient(v.id_cliente);
           setDate(String(v.fecha_entrega).slice(0, 10));
           setPaid(Number(v.pagado) === 1 || v.pagado === true);
@@ -6531,8 +6600,8 @@ export function Flyers() {
       <Card style={{ backgroundColor: colors.primarySoft }}>
         <Text style={s.cardTitle}>Tu diseñador creativo con IA</Text>
         <Text style={s.meta}>
-          Elige qué quieres comunicar. La IA crea una escena diferente y la app
-          coloca los textos con ortografía exacta.
+          Elige qué quieres comunicar. La IA crea el diseño completo. Revisa los
+          textos y precios de la imagen antes de compartirla.
         </Text>
       </Card>
       <Text style={s.label}>¿Qué quieres crear?</Text>
@@ -6570,7 +6639,9 @@ export function Flyers() {
               setSelected((current) =>
                 active
                   ? current.filter((id) => id !== item.id_producto)
-                  : [...current, item.id_producto],
+                  : current.length < 8
+                    ? [...current, item.id_producto]
+                    : current,
               )
             }
           >

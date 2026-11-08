@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useEffect, useState } from "react";
-import { api } from "../api/api";
+import { api, onSessionExpired } from "../api/api";
 import { clearSession, getSession, saveSession } from "../storage/authStorage";
 const C = createContext();
 export const useAuth = () => useContext(C);
@@ -8,17 +8,30 @@ export function AuthProvider({ children }) {
     [loading, setLoading] = useState(true);
   useEffect(() => {
     (async () => {
-      const s = await getSession();
-      if (s)
-        try {
-          const { data } = await api.get("/auth/me");
-          setSession({ ...s, usuario: data.data });
-        } catch {
-          await clearSession();
-        }
+      try {
+        const s = await getSession();
+        if (s)
+          try {
+            const { data } = await api.get("/auth/me");
+            setSession({ ...s, usuario: data.data });
+          } catch (error) {
+            if (error.response?.status === 401) await clearSession();
+            else setSession(s);
+          }
+      } catch {
+        await clearSession().catch(() => {});
+      }
       setLoading(false);
     })();
   }, []);
+  useEffect(
+    () =>
+      onSessionExpired(() => {
+        clearSession().catch(() => {});
+        setSession(null);
+      }),
+    [],
+  );
   const enter = async (path, body) => {
     const { data } = await api.post(path, body);
     await saveSession(data.data);

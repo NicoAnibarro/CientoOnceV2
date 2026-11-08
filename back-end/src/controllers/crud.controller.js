@@ -1,6 +1,7 @@
 const db = require("../config/db");
 const { numero, entero } = require("../utils/numeros");
 const { unidadValida } = require("../utils/unidades");
+const { fechaValida } = require("../utils/fechas");
 
 const configs = {
   clientes: {
@@ -56,10 +57,27 @@ function validar(tipo, body) {
   const config = configs[tipo];
   if (
     config.required.some(
-      (key) => body[key] === undefined || String(body[key]).trim() === "",
+      (key) => body[key] == null || String(body[key]).trim() === "",
     )
   )
     return "Completa los campos obligatorios";
+  if (
+    typeof body.nombre !== "string" ||
+    body.nombre.trim().length > (tipo === "clientes" ? 100 : 120)
+  )
+    return "Nombre inválido";
+  for (const [key, max] of Object.entries({
+    telefono: 40,
+    direccion: 255,
+    google_place_id: 255,
+    instrucciones_entrega: 255,
+  })) {
+    if (
+      body[key] != null &&
+      (typeof body[key] !== "string" || body[key].length > max)
+    )
+      return `Campo ${key} inválido`;
+  }
   if (tipo === "clientes") {
     const hasLat =
       body.latitud !== undefined &&
@@ -115,11 +133,30 @@ function validar(tipo, body) {
       price < 0 ||
       quantity === null ||
       quantity <= 0 ||
+      !fechaValida(body.fecha_precio) ||
       !unidadValida(body.tipo_medida, body.unidad_referencia)
     )
       return "Datos o unidades del insumo inválidos";
   }
   return null;
+}
+
+function valores(tipo, body) {
+  const normalized = { ...body, nombre: body.nombre.trim() };
+  const numeric =
+    tipo === "productos"
+      ? ["precio_venta", "costo_estimado", "stock_actual"]
+      : tipo === "insumos"
+        ? ["precio_referencia", "cantidad_referencia"]
+        : [];
+  for (const key of numeric) normalized[key] = numero(body[key] ?? 0);
+  if (tipo === "productos")
+    normalized.categoria = String(body.categoria).trim();
+  if (tipo === "clientes")
+    for (const key of ["latitud", "longitud"])
+      normalized[key] =
+        body[key] == null || body[key] === "" ? null : Number(body[key]);
+  return configs[tipo].fields.map((key) => normalized[key] ?? null);
 }
 
 async function duplicateSupply(userId, name, ignoredId = null) {
@@ -181,14 +218,12 @@ exports.controller = (tipo) => ({
       tipo === "insumos" &&
       (await duplicateSupply(req.usuario.id_usuario, req.body.nombre))
     ) {
-      return res
-        .status(409)
-        .json({
-          ok: false,
-          mensaje: "Ya existe un insumo activo con ese nombre",
-        });
+      return res.status(409).json({
+        ok: false,
+        mensaje: "Ya existe un insumo activo con ese nombre",
+      });
     }
-    const values = config.fields.map((key) => req.body[key] ?? null);
+    const values = valores(tipo, req.body);
     if (tipo === "productos") {
       if (values[2] === null) values[2] = "Dulce";
       if (values[5] === null) values[5] = 0;
@@ -197,13 +232,11 @@ exports.controller = (tipo) => ({
       `INSERT INTO ${tipo}(id_usuario,${config.fields.join(",")}) VALUES(?,${config.fields.map(() => "?").join(",")})`,
       [req.usuario.id_usuario, ...values],
     );
-    res
-      .status(201)
-      .json({
-        ok: true,
-        mensaje: "Registro creado correctamente",
-        data: { [config.id]: result.insertId },
-      });
+    res.status(201).json({
+      ok: true,
+      mensaje: "Registro creado correctamente",
+      data: { [config.id]: result.insertId },
+    });
   },
   update: async (req, res) => {
     const config = configs[tipo];
@@ -217,14 +250,12 @@ exports.controller = (tipo) => ({
         Number(req.params.id),
       ))
     ) {
-      return res
-        .status(409)
-        .json({
-          ok: false,
-          mensaje: "Ya existe otro insumo activo con ese nombre",
-        });
+      return res.status(409).json({
+        ok: false,
+        mensaje: "Ya existe otro insumo activo con ese nombre",
+      });
     }
-    const values = config.fields.map((key) => req.body[key] ?? null);
+    const values = valores(tipo, req.body);
     const [result] = await db.query(
       `UPDATE ${tipo} SET ${config.fields.map((key) => `${key}=?`).join(",")} WHERE ${config.id}=? AND id_usuario=? AND activo=1`,
       [...values, req.params.id, req.usuario.id_usuario],

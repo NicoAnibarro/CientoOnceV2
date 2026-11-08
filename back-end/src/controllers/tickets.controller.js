@@ -156,13 +156,15 @@ function cerca(left, right) {
 }
 
 exports.analizar = async (req, res) => {
-  if (!process.env.GEMINI_API_KEY)
+  if (!req.file)
     return res
-      .status(503)
-      .json({
-        ok: false,
-        mensaje: "Falta configurar GEMINI_API_KEY en el backend",
-      });
+      .status(400)
+      .json({ ok: false, mensaje: "Selecciona una foto del ticket" });
+  if (!process.env.GEMINI_API_KEY)
+    return res.status(503).json({
+      ok: false,
+      mensaje: "Falta configurar GEMINI_API_KEY en el backend",
+    });
   if (!req.file)
     return res
       .status(400)
@@ -192,13 +194,11 @@ exports.analizar = async (req, res) => {
   try {
     parsed = JSON.parse(response.text);
   } catch {
-    return res
-      .status(422)
-      .json({
-        ok: false,
-        mensaje:
-          "La IA no pudo interpretar este comprobante. Prueba con una foto más nítida.",
-      });
+    return res.status(422).json({
+      ok: false,
+      mensaje:
+        "La IA no pudo interpretar este comprobante. Prueba con una foto más nítida.",
+    });
   }
 
   const [supplies] = await db.query(

@@ -1,4 +1,10 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   Alert,
   Modal,
@@ -11,7 +17,7 @@ import {
   Text,
   View,
 } from "react-native";
-import { useFocusEffect } from "@react-navigation/native";
+import { useFocusEffect, usePreventRemove } from "@react-navigation/native";
 import { KeyboardAwareScrollView } from "react-native-keyboard-controller";
 import DateTimePicker from "@react-native-community/datetimepicker";
 import { Ionicons } from "@expo/vector-icons";
@@ -27,6 +33,7 @@ import {
   money,
 } from "../components/UI";
 import { api, message } from "../api/api";
+import { useAuth } from "../context/AuthContext";
 import colors, { registerThemeListener } from "../theme/colors";
 
 const PAGE_SIZE = 6;
@@ -59,7 +66,15 @@ const dateOnly = (value) => String(value || "").slice(0, 10);
 const parseDate = (value) => new Date(`${dateOnly(value)}T12:00:00`);
 const addMonth = (value) => {
   const date = parseDate(value);
+  const day = date.getDate();
+  date.setDate(1);
   date.setMonth(date.getMonth() + 1);
+  const lastDay = new Date(
+    date.getFullYear(),
+    date.getMonth() + 1,
+    0,
+  ).getDate();
+  date.setDate(Math.min(day, lastDay));
   return localDate(date);
 };
 const prettyDate = (value) => {
@@ -159,6 +174,10 @@ function Status({ ok, yes, no }) {
 }
 
 export function Viandas({ navigation }) {
+  const { session } = useAuth();
+  const canSell = ["propietario", "administrador", "ventas"].includes(
+    session?.usuario?.rol || "propietario",
+  );
   const [rows, setRows] = useState([]);
   const [meta, setMeta] = useState({ page: 1, total_pages: 1, total: 0 });
   const [page, setPage] = useState(1);
@@ -213,21 +232,25 @@ export function Viandas({ navigation }) {
           title="Viandas"
           subtitle="Una ficha compacta por cliente"
           action={
-            <IconButton
-              icon="add"
-              active
-              onPress={() => navigation.navigate("NuevaVianda")}
-            />
+            canSell ? (
+              <IconButton
+                icon="add"
+                active
+                onPress={() => navigation.navigate("NuevaVianda")}
+              />
+            ) : null
           }
         />
         <View style={s.quickActions}>
-          <Button
-            compact
-            icon="add-circle-outline"
-            title="Nueva reserva"
-            onPress={() => navigation.navigate("NuevaVianda")}
-            style={{ flex: 1 }}
-          />
+          {canSell ? (
+            <Button
+              compact
+              icon="add-circle-outline"
+              title="Nueva reserva"
+              onPress={() => navigation.navigate("NuevaVianda")}
+              style={{ flex: 1 }}
+            />
+          ) : null}
           <Button
             compact
             secondary
@@ -368,16 +391,53 @@ export function Viandas({ navigation }) {
 }
 
 export function DetalleViandasCliente({ navigation, route }) {
+  const { session } = useAuth();
+  const role = session?.usuario?.rol || "propietario";
+  const canDeliver = [
+    "propietario",
+    "administrador",
+    "ventas",
+    "reparto",
+  ].includes(role);
+  const canPay = ["propietario", "administrador", "ventas", "caja"].includes(
+    role,
+  );
+  const canSell = ["propietario", "administrador", "ventas"].includes(role);
   const clientId = route.params?.id_cliente;
   const [data, setData] = useState(null);
   const [selectedSeries, setSelectedSeries] = useState(null);
   const [planPage, setPlanPage] = useState(1);
   const [page, setPage] = useState(1);
   const [busy, setBusy] = useState(false);
+  const [pending, setPending] = useState({});
+  const pendingRef = useRef(pending);
+  const busyRef = useRef(false);
+  pendingRef.current = pending;
+  const pendingCount = Object.keys(pending).length;
+  usePreventRemove(pendingCount > 0 || busy, ({ data: actionData }) => {
+    if (busyRef.current)
+      return Alert.alert(
+        "Guardando cambios",
+        "Espera a que termine la operación.",
+      );
+    Alert.alert(
+      "Cambios sin aplicar",
+      "Tus casillas todavía no están guardadas.",
+      [
+        { text: "Seguir marcando", style: "cancel" },
+        {
+          text: "Descartar y salir",
+          style: "destructive",
+          onPress: () => navigation.dispatch(actionData.action),
+        },
+      ],
+    );
+  });
 
   const load = useCallback(async () => {
     try {
       const response = await api.get(`/viandas/clientes/${clientId}`);
+      if (Object.keys(pendingRef.current).length) return;
       setData(response.data.data);
       setSelectedSeries(
         (current) =>
@@ -389,7 +449,7 @@ export function DetalleViandasCliente({ navigation, route }) {
   }, [clientId]);
   useFocusEffect(
     useCallback(() => {
-      load();
+      if (!Object.keys(pendingRef.current).length && !busyRef.current) load();
     }, [load]),
   );
 
@@ -411,51 +471,77 @@ export function DetalleViandasCliente({ navigation, route }) {
     page * DELIVERY_PAGE_SIZE,
   );
 
-  const changeState = async (delivery) => {
-    const next = delivery.estado === "entregado" ? "pendiente" : "entregado";
-    try {
-      setBusy(true);
-      await api.patch(`/viandas/${delivery.id_pedido_vianda}/estado`, {
-        estado: next,
-      });
-      await load();
-    } catch (error) {
-      Alert.alert("No se pudo actualizar", message(error));
-    } finally {
-      setBusy(false);
-    }
+  const toggle = (delivery, field) => {
+    if (busyRef.current) return;
+    setPending((current) => {
+      const id = delivery.id_pedido_vianda;
+      const next = { ...(current[id] || {}) };
+      const original =
+        field === "pagado" ? Boolean(delivery.pagado) : delivery.estado;
+      const value = next[field] ?? original;
+      const changed =
+        field === "pagado"
+          ? !value
+          : value === "entregado"
+            ? "pendiente"
+            : "entregado";
+      if (changed === original) {
+        delete next[field];
+        delete next[`${field}_anterior`];
+      } else {
+        next[field] = changed;
+        next[`${field}_anterior`] = original;
+      }
+      const result = { ...current };
+      if (Object.keys(next).length) result[id] = next;
+      else delete result[id];
+      return result;
+    });
   };
 
-  const togglePayment = (delivery) => {
-    const willBePaid = !delivery.pagado;
-    Alert.alert(
-      willBePaid ? "Confirmar cobro" : "Revertir cobro",
-      willBePaid
-        ? `Se sumarán ${money(delivery.total)} a lo cobrado y a caja por el ${prettyDate(delivery.fecha_entrega)}.`
-        : `Se restarán ${money(delivery.total)} de lo cobrado y de caja. Usá esta opción si marcaste el día por error.`,
-      [
-        { text: "Cancelar", style: "cancel" },
-        {
-          text: willBePaid ? "Sí, cobrar" : "Sí, revertir",
-          style: willBePaid ? "default" : "destructive",
-          onPress: async () => {
-            try {
-              setBusy(true);
-              await api.patch(`/viandas/${delivery.id_pedido_vianda}/pagado`, {
-                pagado: willBePaid,
-                metodo_pago: activeSeries?.metodo_pago || "efectivo",
-                fecha_pago: localDate(),
-              });
-              await load();
-            } catch (error) {
-              Alert.alert("No se pudo registrar el pago", message(error));
-            } finally {
-              setBusy(false);
-            }
-          },
-        },
-      ],
-    );
+  const applyChanges = async () => {
+    if (busyRef.current || !pendingCount) return;
+    busyRef.current = true;
+    setBusy(true);
+    try {
+      const cambios = Object.entries(pending).map(([id, change]) => ({
+        id_pedido_vianda: Number(id),
+        ...change,
+        ...(change.pagado === true ? { fecha_pago: localDate() } : {}),
+      }));
+      const response = await api.patch(
+        `/viandas/clientes/${clientId}/cambios`,
+        { cambios },
+      );
+      const updated = response.data.data;
+      setData((current) => ({
+        ...current,
+        series: current.series.map((plan) => ({
+          ...plan,
+          ...(updated.series.find((item) => item.id_serie === plan.id_serie) ||
+            {}),
+          entregas: plan.entregas.map((delivery) => ({
+            ...delivery,
+            ...(updated.entregas.find(
+              (item) => item.id_pedido_vianda === delivery.id_pedido_vianda,
+            ) || {}),
+          })),
+        })),
+      }));
+      setPending({});
+      Alert.alert(
+        "Cambios aplicados",
+        "Las entregas y los cobros quedaron guardados.",
+      );
+    } catch (error) {
+      Alert.alert(
+        "No se pudieron aplicar los cambios",
+        `${message(error)}\nTu selección se conserva para que puedas revisarla o volver a intentar.`,
+      );
+    } finally {
+      busyRef.current = false;
+      setBusy(false);
+    }
   };
 
   if (!data)
@@ -472,13 +558,15 @@ export function DetalleViandasCliente({ navigation, route }) {
           title={data.cliente.nombre}
           subtitle={`${series.length} ${series.length === 1 ? "plan" : "planes"} de viandas`}
           action={
-            <IconButton
-              icon="add"
-              active
-              onPress={() =>
-                navigation.navigate("NuevaVianda", { id_cliente: clientId })
-              }
-            />
+            canSell ? (
+              <IconButton
+                icon="add"
+                active
+                onPress={() =>
+                  navigation.navigate("NuevaVianda", { id_cliente: clientId })
+                }
+              />
+            ) : null
           }
         />
         {data.cliente.direccion ? (
@@ -560,12 +648,22 @@ export function DetalleViandasCliente({ navigation, route }) {
             </View>
             <View style={s.deliveryGrid}>
               {visibleDeliveries.map((delivery) => {
-                const cancelled = delivery.estado === "cancelado";
-                const delivered = delivery.estado === "entregado";
+                const draft = pending[delivery.id_pedido_vianda] || {};
+                const cancelled =
+                  (draft.estado ?? delivery.estado) === "cancelado";
+                const delivered =
+                  (draft.estado ?? delivery.estado) === "entregado";
+                const paid = draft.pagado ?? Boolean(delivery.pagado);
                 return (
                   <View
                     key={delivery.id_pedido_vianda}
-                    style={[s.deliveryTile, cancelled && s.disabled]}
+                    style={[
+                      s.deliveryTile,
+                      cancelled && s.disabled,
+                      pending[delivery.id_pedido_vianda] && {
+                        backgroundColor: colors.primarySoft,
+                      },
+                    ]}
                   >
                     <Text style={s.deliveryDate}>
                       {prettyDate(delivery.fecha_entrega)}
@@ -575,9 +673,14 @@ export function DetalleViandasCliente({ navigation, route }) {
                       {money(delivery.total)}
                     </Text>
                     <Pressable
-                      disabled={busy || cancelled}
+                      disabled={busy || cancelled || !canDeliver}
                       style={s.checkRow}
-                      onPress={() => changeState(delivery)}
+                      onPress={() => toggle(delivery, "estado")}
+                      accessibilityRole="checkbox"
+                      accessibilityState={{
+                        checked: delivered,
+                        disabled: busy || cancelled || !canDeliver,
+                      }}
                     >
                       <Ionicons
                         name={delivered ? "checkbox" : "square-outline"}
@@ -589,21 +692,77 @@ export function DetalleViandasCliente({ navigation, route }) {
                       <Text style={s.checkLabel}>Entregada</Text>
                     </Pressable>
                     <Pressable
-                      disabled={busy || cancelled}
+                      disabled={busy || cancelled || !canPay}
                       style={s.checkRow}
-                      onPress={() => togglePayment(delivery)}
+                      onPress={() => toggle(delivery, "pagado")}
+                      accessibilityRole="checkbox"
+                      accessibilityState={{
+                        checked: paid,
+                        disabled: busy || cancelled || !canPay,
+                      }}
                     >
                       <Ionicons
-                        name={delivery.pagado ? "checkbox" : "square-outline"}
+                        name={paid ? "checkbox" : "square-outline"}
                         size={24}
-                        color={
-                          delivery.pagado
-                            ? colors.primary
-                            : colors.textSecondary
-                        }
+                        color={paid ? colors.primary : colors.textSecondary}
                       />
                       <Text style={s.checkLabel}>Cobrada</Text>
                     </Pressable>
+                    {canSell ? (
+                      <>
+                        {!cancelled ? (
+                          <Button
+                            compact
+                            secondary
+                            title="Editar fecha"
+                            disabled={busy || pendingCount > 0}
+                            onPress={() =>
+                              navigation.navigate("NuevaVianda", {
+                                entrega: delivery,
+                                id_cliente: clientId,
+                              })
+                            }
+                          />
+                        ) : null}
+                        <Button
+                          compact
+                          secondary
+                          disabled={busy}
+                          title={
+                            cancelled ? "Reactivar fecha" : "Cancelar fecha"
+                          }
+                          onPress={() => {
+                            setPending((current) => {
+                              const id = delivery.id_pedido_vianda;
+                              if (
+                                current[id]?.estado === "cancelado" ||
+                                (delivery.estado === "cancelado" &&
+                                  current[id]?.estado === "pendiente")
+                              ) {
+                                const next = { ...current };
+                                delete next[id];
+                                return next;
+                              }
+                              return {
+                                ...current,
+                                [id]: {
+                                  estado: cancelled ? "pendiente" : "cancelado",
+                                  estado_anterior: delivery.estado,
+                                  ...(!cancelled
+                                    ? {
+                                        pagado: false,
+                                        pagado_anterior: Boolean(
+                                          delivery.pagado,
+                                        ),
+                                      }
+                                    : {}),
+                                },
+                              };
+                            });
+                          }}
+                        />
+                      </>
+                    ) : null}
                   </View>
                 );
               })}
@@ -618,6 +777,39 @@ export function DetalleViandasCliente({ navigation, route }) {
           <Empty text="Este cliente todavía no tiene planes" />
         )}
       </ScrollView>
+      <View
+        style={{
+          padding: 12,
+          gap: 8,
+          backgroundColor: colors.surface,
+          borderTopWidth: 1,
+          borderTopColor: colors.border,
+        }}
+      >
+        <Text style={s.muted}>
+          {pendingCount
+            ? `${pendingCount} fechas con cambios sin aplicar`
+            : "Marca las casillas y luego aplica los cambios"}
+        </Text>
+        <Button
+          title={busy ? "Aplicando cambios…" : "Aplicar cambios"}
+          icon="checkmark-done-outline"
+          disabled={busy || !pendingCount}
+          onPress={applyChanges}
+        />
+        {pendingCount > 0 ? (
+          <Button
+            secondary
+            title="Descartar selección"
+            disabled={busy}
+            onPress={() => {
+              pendingRef.current = {};
+              setPending({});
+              load();
+            }}
+          />
+        ) : null}
+      </View>
     </Screen>
   );
 }
@@ -719,6 +911,7 @@ function ItemEditor({
 }
 
 export function NuevaVianda({ navigation, route }) {
+  const editing = route.params?.entrega;
   const today = localDate();
   const [config, setConfig] = useState(null);
   const [clients, setClients] = useState([]);
@@ -730,16 +923,26 @@ export function NuevaVianda({ navigation, route }) {
   const [shipping, setShipping] = useState(false);
   const [shippingPrice, setShippingPrice] = useState("0");
   const [frequency, setFrequency] = useState("unico");
-  const [startDate, setStartDate] = useState(today);
-  const [endDate, setEndDate] = useState(today);
+  const [startDate, setStartDate] = useState(
+    editing ? dateOnly(editing.fecha_entrega) : today,
+  );
+  const [endDate, setEndDate] = useState(
+    editing ? dateOnly(editing.fecha_entrega) : today,
+  );
   const [weekDays, setWeekDays] = useState([1, 2, 3, 4, 5]);
-  const [time, setTime] = useState(localTime());
-  const [discountType, setDiscountType] = useState("porcentaje");
-  const [discountValue, setDiscountValue] = useState("");
+  const [time, setTime] = useState(
+    editing ? String(editing.hora_entrega).slice(0, 5) : localTime(),
+  );
+  const [discountType, setDiscountType] = useState(
+    editing?.descuento_tipo || "porcentaje",
+  );
+  const [discountValue, setDiscountValue] = useState(
+    editing?.descuento_valor ? String(editing.descuento_valor) : "",
+  );
   const [paymentMode, setPaymentMode] = useState("ninguno");
-  const [method, setMethod] = useState("efectivo");
-  const [delivered, setDelivered] = useState(false);
-  const [notes, setNotes] = useState("");
+  const [method, setMethod] = useState(editing?.metodo_pago || "efectivo");
+  const [delivered, setDelivered] = useState(editing?.estado === "entregado");
+  const [notes, setNotes] = useState(editing?.observaciones || "");
   const [busy, setBusy] = useState(false);
   const [clientModal, setClientModal] = useState(false);
   const [newClient, setNewClient] = useState({
@@ -758,6 +961,25 @@ export function NuevaVianda({ navigation, route }) {
         const next = configuration.data.data;
         setConfig(next);
         setClients(clientResponse.data.data || []);
+        if (editing) {
+          setShipping(Boolean(editing.con_envio));
+          setShippingPrice(String(editing.costo_envio || 0));
+          setItems(
+            (editing.items?.length ? editing.items : [editing]).map(
+              (item, index) => ({
+                ...item,
+                key: index,
+                cantidad: String(item.cantidad),
+                precio_unitario: String(item.precio_unitario),
+                con_postre: Boolean(item.con_postre),
+                precio_postre_unitario: String(
+                  item.precio_postre_unitario || 0,
+                ),
+              }),
+            ),
+          );
+          return;
+        }
         setShippingPrice(String(next.precio_envio || 0));
         const first = next.tipos?.[0];
         if (first)
@@ -943,6 +1165,14 @@ export function NuevaVianda({ navigation, route }) {
     };
     try {
       setBusy(true);
+      if (editing) {
+        await api.put(`/viandas/${editing.id_pedido_vianda}`, {
+          ...body,
+          fecha_entrega: startDate,
+        });
+        navigation.goBack();
+        return;
+      }
       const response = await api.post("/viandas", body);
       Alert.alert(
         "Reserva creada",
@@ -972,7 +1202,7 @@ export function NuevaVianda({ navigation, route }) {
         contentContainerStyle={s.page}
       >
         <Header
-          title="Nueva reserva"
+          title={editing ? "Editar entrega" : "Nueva reserva"}
           subtitle="Una reserva puede combinar distintos tipos de vianda"
           action={
             <IconButton
@@ -981,53 +1211,64 @@ export function NuevaVianda({ navigation, route }) {
             />
           }
         />
-        <View style={s.sectionHeader}>
-          <Text style={s.sectionTitle}>1. Cliente</Text>
-          <Button
-            compact
-            secondary
-            icon="person-add-outline"
-            title="Nuevo"
-            onPress={() => setClientModal(true)}
-          />
-        </View>
-        <Input
-          icon="search-outline"
-          placeholder="Buscar cliente"
-          value={clientSearch}
-          onChangeText={(value) => {
-            setClientSearch(value);
-            setClientPage(1);
-          }}
-        />
-        <View style={s.clientGrid}>
-          {visibleClients.map((client) => (
-            <Pressable
-              key={client.id_cliente}
-              style={[
-                s.clientOption,
-                clientId === client.id_cliente && s.selectedCard,
-              ]}
-              onPress={() => setClientId(client.id_cliente)}
-            >
-              <Text numberOfLines={1} style={s.cardTitle}>
-                {client.nombre}
-              </Text>
-              {clientId === client.id_cliente ? (
-                <Ionicons
-                  name="checkmark-circle"
-                  size={20}
-                  color={colors.primary}
-                />
-              ) : null}
-            </Pressable>
-          ))}
-        </View>
-        <Pagination
-          page={clientPage}
-          totalPages={clientPages}
-          onChange={setClientPage}
-        />
+        {!editing ? (
+          <>
+            <View style={s.sectionHeader}>
+              <Text style={s.sectionTitle}>1. Cliente</Text>
+              <Button
+                compact
+                secondary
+                icon="person-add-outline"
+                title="Nuevo"
+                onPress={() => setClientModal(true)}
+              />
+            </View>
+            <Input
+              icon="search-outline"
+              placeholder="Buscar cliente"
+              value={clientSearch}
+              onChangeText={(value) => {
+                setClientSearch(value);
+                setClientPage(1);
+              }}
+            />
+            <View style={s.clientGrid}>
+              {visibleClients.map((client) => (
+                <Pressable
+                  key={client.id_cliente}
+                  style={[
+                    s.clientOption,
+                    clientId === client.id_cliente && s.selectedCard,
+                  ]}
+                  onPress={() => setClientId(client.id_cliente)}
+                >
+                  <Text numberOfLines={1} style={s.cardTitle}>
+                    {client.nombre}
+                  </Text>
+                  {clientId === client.id_cliente ? (
+                    <Ionicons
+                      name="checkmark-circle"
+                      size={20}
+                      color={colors.primary}
+                    />
+                  ) : null}
+                </Pressable>
+              ))}
+            </View>
+            <Pagination
+              page={clientPage}
+              totalPages={clientPages}
+              onChange={setClientPage}
+            />
+          </>
+        ) : (
+          <Text style={s.info}>
+            Cliente:{" "}
+            {clients.find((client) => client.id_cliente === clientId)?.nombre ||
+              editing.cliente_nombre}
+            . Esta edición modifica una sola entrega.
+          </Text>
+        )}
 
         <View style={s.sectionHeader}>
           <View style={{ flex: 1 }}>
@@ -1072,21 +1313,23 @@ export function NuevaVianda({ navigation, route }) {
         />
 
         <Text style={s.sectionTitle}>3. Frecuencia y entrega</Text>
-        <View style={s.chips}>
-          {[
-            ["unico", "Una vez"],
-            ["diario", "Diario"],
-            ["semanal", "Semanal"],
-            ["mensual", "Mensual"],
-          ].map(([key, label]) => (
-            <Chip
-              key={key}
-              label={label}
-              selected={frequency === key}
-              onPress={() => chooseFrequency(key)}
-            />
-          ))}
-        </View>
+        {!editing ? (
+          <View style={s.chips}>
+            {[
+              ["unico", "Una vez"],
+              ["diario", "Diario"],
+              ["semanal", "Semanal"],
+              ["mensual", "Mensual"],
+            ].map(([key, label]) => (
+              <Chip
+                key={key}
+                label={label}
+                selected={frequency === key}
+                onPress={() => chooseFrequency(key)}
+              />
+            ))}
+          </View>
+        ) : null}
         <DateField
           label={frequency === "unico" ? "Fecha de entrega" : "Desde"}
           value={startDate}
@@ -1178,26 +1421,35 @@ export function NuevaVianda({ navigation, route }) {
             />
           </View>
         </Card>
-        <Text style={s.label}>¿Cuánto abonó al crear la reserva?</Text>
-        <View style={s.chips}>
-          {[
-            ["ninguno", "Nada todavía"],
-            ["completo", "Pagó todo"],
-          ].map(([key, label]) => (
-            <Chip
-              key={key}
-              label={label}
-              selected={paymentMode === key}
-              onPress={() => setPaymentMode(key)}
-            />
-          ))}
-        </View>
-        {paymentMode === "ninguno" ? (
+        {!editing ? (
+          <>
+            <Text style={s.label}>¿Cuánto abonó al crear la reserva?</Text>
+            <View style={s.chips}>
+              {[
+                ["ninguno", "Nada todavía"],
+                ["completo", "Pagó todo"],
+              ].map(([key, label]) => (
+                <Chip
+                  key={key}
+                  label={label}
+                  selected={paymentMode === key}
+                  onPress={() => setPaymentMode(key)}
+                />
+              ))}
+            </View>
+            {paymentMode === "ninguno" ? (
+              <Text style={s.info}>
+                Si entrega un adelanto, creá la reserva sin pagar y luego marcá
+                como cobradas las fechas que cubre ese dinero.
+              </Text>
+            ) : null}
+          </>
+        ) : (
           <Text style={s.info}>
-            Si entrega un adelanto, creá la reserva sin pagar y luego marcá como
-            cobradas las fechas que cubre ese dinero.
+            El estado de cobro se conserva. Para marcar o revertir pagos usa las
+            casillas del detalle y Aplicar cambios.
           </Text>
-        ) : null}
+        )}
         <Text style={s.label}>Método de pago acordado</Text>
         <View style={s.chips}>
           {PAYMENT_METHODS.map((value) => (
@@ -1227,14 +1479,18 @@ export function NuevaVianda({ navigation, route }) {
           <Text style={s.summaryLine}>Entregas: {deliveryDates.length}</Text>
           <Text style={s.summaryTotal}>{money(totalPlan)}</Text>
           <Text style={s.summaryHint}>
-            {paymentMode === "completo"
-              ? "Quedará pagado por completo."
-              : "El total quedará como saldo pendiente."}
+            {editing
+              ? "El importe de esta entrega se actualizará; su fecha original de cobro se conserva."
+              : paymentMode === "completo"
+                ? "Quedará pagado por completo."
+                : "El total quedará como saldo pendiente."}
           </Text>
         </View>
         <Button
           icon="checkmark"
-          title={busy ? "Creando reserva…" : "Crear reserva"}
+          title={
+            busy ? "Guardando…" : editing ? "Guardar entrega" : "Crear reserva"
+          }
           disabled={busy}
           onPress={submit}
         />

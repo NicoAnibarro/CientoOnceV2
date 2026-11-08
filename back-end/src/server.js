@@ -9,7 +9,7 @@ if (!process.env.JWT_SECRET) {
 
 const server = app.listen(port, "0.0.0.0", () => {
   console.log(`Ciento Once API local actualizada en http://0.0.0.0:${port}`);
-  console.log(`Version: 2026.10.24-viandas-stock-guide`);
+  console.log(`Version: 2026.11.08-viandas-cambios-lote`);
   console.log(
     `Verificacion por correo: ${emailService.configured() ? "ACTIVA" : "INACTIVA"}`,
   );

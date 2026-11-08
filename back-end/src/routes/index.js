@@ -85,6 +85,7 @@ r.post(
 r.post(
   "/tickets/analizar",
   auth,
+  permit("propietario", "administrador"),
   ticketLim,
   ticketUpload.single("ticket"),
   tickets.analizar,
@@ -95,7 +96,12 @@ for (const tipo of ["clientes", "productos", "insumos"]) {
       tipo === "clientes"
         ? ["propietario", "administrador", "ventas"]
         : ["propietario", "administrador"];
-  r.get("/" + tipo, auth, c.list);
+  r.get(
+    "/" + tipo,
+    auth,
+    ...(tipo === "insumos" ? [permit("propietario", "administrador")] : []),
+    c.list,
+  );
   r.post("/" + tipo, auth, permit(...writeRoles), c.create);
   r.put("/" + tipo + "/:id", auth, permit(...writeRoles), c.update);
   r.patch(
@@ -155,6 +161,12 @@ r.patch(
 r.get("/viandas", auth, viandas.list);
 r.get("/viandas/clientes", auth, viandas.clients);
 r.get("/viandas/clientes/:id_cliente", auth, viandas.client);
+r.patch(
+  "/viandas/clientes/:id_cliente/cambios",
+  auth,
+  permit("propietario", "administrador", "ventas", "caja", "reparto"),
+  viandas.applyChanges,
+);
 r.post(
   "/viandas/series/:id_serie/pagos",
   auth,
@@ -223,19 +235,39 @@ r.patch(
   o.desactivarCategoria,
 );
 r.get("/informes", auth, permit("propietario", "administrador"), o.informes);
-r.get("/stock", auth, o.stock);
+r.get("/stock", auth, permit("propietario", "administrador"), o.stock);
 r.post(
   "/stock/productos/:id",
   auth,
   permit("propietario", "administrador"),
   o.moverStock,
 );
-r.get("/stock/reposicion", auth, commercial.reposicion);
-r.get("/compras", auth, o.compras);
-r.get("/compras/:id", auth, o.compra);
+r.get(
+  "/stock/reposicion",
+  auth,
+  permit("propietario", "administrador"),
+  commercial.reposicion,
+);
+r.get(
+  "/compras",
+  auth,
+  permit("propietario", "administrador", "caja"),
+  o.compras,
+);
+r.get(
+  "/compras/:id",
+  auth,
+  permit("propietario", "administrador", "caja"),
+  o.compra,
+);
 r.post("/compras", auth, permit("propietario", "administrador"), o.crearCompra);
-r.get("/caja", auth, o.caja);
-r.get("/caja/resumen", auth, o.resumen);
+r.get("/caja", auth, permit("propietario", "administrador", "caja"), o.caja);
+r.get(
+  "/caja/resumen",
+  auth,
+  permit("propietario", "administrador", "caja"),
+  o.resumen,
+);
 r.post(
   "/caja/movimientos",
   auth,
@@ -319,7 +351,12 @@ r.post(
   imageUpload.array("imagenes", 3),
   flyers.generar,
 );
-r.get("/costos-productos", auth, o.listarCostos);
+r.get(
+  "/costos-productos",
+  auth,
+  permit("propietario", "administrador"),
+  o.listarCostos,
+);
 r.post(
   "/costos-productos",
   auth,

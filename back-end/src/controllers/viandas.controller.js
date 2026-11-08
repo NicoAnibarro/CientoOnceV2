@@ -233,7 +233,7 @@ async function syncSeries(connection, userId, seriesId) {
   const [[totals]] = await connection.query(
     `SELECT
        COALESCE((SELECT SUM(v.total) FROM pedidos_viandas v
-         WHERE v.id_usuario=? AND v.id_serie=? AND v.activo=1),0) total_plan,
+         WHERE v.id_usuario=? AND v.id_serie=? AND v.activo=1 AND v.estado<>'cancelado'),0) total_plan,
        COALESCE((SELECT SUM(p.monto) FROM pagos_viandas p
          WHERE p.id_usuario=? AND p.id_serie=? AND p.activo=1),0) monto_pagado`,
     [userId, seriesId, userId, seriesId],
@@ -260,6 +260,18 @@ async function syncSeries(connection, userId, seriesId) {
   return series;
 }
 
+async function lockDeliverySeries(connection, userId, orderId) {
+  const [[delivery]] = await connection.query(
+    "SELECT id_serie FROM pedidos_viandas WHERE id_pedido_vianda=? AND id_usuario=? AND activo=1",
+    [orderId, userId],
+  );
+  if (delivery)
+    await connection.query(
+      "SELECT id_serie FROM series_viandas WHERE id_serie=? AND id_usuario=? FOR UPDATE",
+      [delivery.id_serie, userId],
+    );
+}
+
 async function setDeliveryPayment(
   connection,
   userId,
@@ -270,9 +282,10 @@ async function setDeliveryPayment(
   sync = true,
 ) {
   const paid = booleanValue(paidValue);
+  await lockDeliverySeries(connection, userId, orderId);
   const [[delivery]] = await connection.query(
-    `SELECT v.id_pedido_vianda,v.id_serie,v.fecha_entrega,v.total,v.estado,
-      s.cliente_nombre,s.metodo_pago
+    `SELECT v.id_pedido_vianda,v.id_serie,v.fecha_entrega,v.total,v.estado,v.pagado,v.fecha_pago,
+      s.cliente_nombre,v.metodo_pago
      FROM pedidos_viandas v JOIN series_viandas s ON s.id_serie=v.id_serie
      WHERE v.id_pedido_vianda=? AND v.id_usuario=? AND v.activo=1 FOR UPDATE`,
     [orderId, userId],
@@ -286,12 +299,19 @@ async function setDeliveryPayment(
       status: 409,
     });
   const method = paymentMethod(methodValue || delivery.metodo_pago);
-  const paymentDate = fechaValida(date) ? `${date} 12:00:00` : null;
+  if (date != null && !fechaValida(date))
+    throw Object.assign(new Error("Fecha de pago inválida"), { status: 400 });
   const [[existing]] = await connection.query(
-    `SELECT id_pago_vianda,activo FROM pagos_viandas
+    `SELECT id_pago_vianda,activo,fecha_pago FROM pagos_viandas
      WHERE id_usuario=? AND id_pedido_vianda=? FOR UPDATE`,
     [userId, orderId],
   );
+  const paymentDate =
+    existing?.activo && delivery.pagado
+      ? existing.fecha_pago
+      : fechaValida(date)
+        ? `${date} 12:00:00`
+        : null;
   let paymentId = existing?.id_pago_vianda || null;
   if (paid && Number(delivery.total) > 0) {
     if (existing) {
@@ -330,7 +350,7 @@ async function setDeliveryPayment(
        (id_usuario,tipo,categoria,concepto,monto,metodo_pago,origen,origen_id,anulado,fecha_movimiento,observaciones)
        VALUES(?,'ingreso','pedido',?,?,?,'vianda',?,0,COALESCE(?,NOW()),?)
        ON CONFLICT (id_usuario,origen,origen_id) DO UPDATE SET monto=EXCLUDED.monto,metodo_pago=EXCLUDED.metodo_pago,
-       anulado=0,fecha_movimiento=EXCLUDED.fecha_movimiento,observaciones=EXCLUDED.observaciones`,
+       anulado=0,fecha_movimiento=CASE WHEN movimientos_caja.anulado=1 THEN EXCLUDED.fecha_movimiento ELSE movimientos_caja.fecha_movimiento END,observaciones=EXCLUDED.observaciones`,
       [
         userId,
         `Vianda ${delivery.cliente_nombre || "Cliente"} · ${String(delivery.fecha_entrega).slice(0, 10)}`,
@@ -433,9 +453,14 @@ exports.createType = async (req, res) => {
       .json({ ok: false, mensaje: "Nombre o precio inválido" });
   try {
     const [result] = await db.query(
-      "INSERT INTO tipos_vianda(id_usuario,nombre,precio_base) VALUES(?,?,?)",
+      `INSERT INTO tipos_vianda(id_usuario,nombre,precio_base) VALUES(?,?,?)
+       ON CONFLICT (id_usuario,nombre) DO UPDATE SET activo=1,precio_base=EXCLUDED.precio_base WHERE tipos_vianda.activo=0`,
       [req.usuario.id_usuario, name, price],
     );
+    if (!result.affectedRows)
+      return res
+        .status(409)
+        .json({ ok: false, mensaje: "Ese tipo de vianda ya existe" });
     res.status(201).json({
       ok: true,
       data: {
@@ -503,7 +528,7 @@ exports.list = async (req, res) => {
     args.push(req.query.estado);
   }
   if (["true", "false"].includes(req.query.pagado)) {
-    where += " AND s.pagado=?";
+    where += " AND v.pagado=?";
     args.push(req.query.pagado === "true" ? 1 : 0);
   }
   if (req.query.desde && fechaValida(req.query.desde)) {
@@ -656,7 +681,7 @@ exports.client = async (req, res) => {
   );
   const [deliveries] = await db.query(
     `SELECT v.* FROM pedidos_viandas v WHERE v.id_usuario=? AND v.id_cliente=? AND v.activo=1
-     ORDER BY v.estado='pendiente' DESC,v.fecha_entrega ASC,v.hora_entrega ASC`,
+     ORDER BY v.fecha_entrega ASC,v.hora_entrega ASC,v.id_pedido_vianda ASC`,
     [userId, clientId],
   );
   const details = await detailsForOrders(
@@ -838,6 +863,7 @@ exports.update = async (req, res) => {
   try {
     await connection.beginTransaction();
     const userId = req.usuario.id_usuario;
+    await lockDeliverySeries(connection, userId, req.params.id);
     const [[current]] = await connection.query(
       `SELECT v.*,s.total_plan,s.monto_pagado FROM pedidos_viandas v
        JOIN series_viandas s ON s.id_serie=v.id_serie
@@ -848,6 +874,13 @@ exports.update = async (req, res) => {
       throw Object.assign(new Error("Pedido de vianda no encontrado"), {
         status: 404,
       });
+    if (Number(req.body.id_cliente) !== Number(current.id_cliente))
+      throw Object.assign(
+        new Error(
+          "Una entrega debe conservar el cliente de su plan. Crea una reserva separada para otro cliente.",
+        ),
+        { status: 409 },
+      );
     if (
       !fechaValida(req.body.fecha_entrega) ||
       !/^([01]\d|2[0-3]):[0-5]\d$/.test(String(req.body.hora_entrega || ""))
@@ -901,19 +934,6 @@ exports.update = async (req, res) => {
       Number(req.params.id),
       values.items,
     );
-    await connection.query(
-      `UPDATE series_viandas SET id_cliente=?,cliente_nombre=?,cliente_telefono=?,cliente_direccion=?,metodo_pago=?
-       WHERE id_serie=? AND id_usuario=?`,
-      [
-        values.client.id_cliente,
-        values.client.nombre,
-        values.client.telefono,
-        values.client.direccion,
-        method,
-        current.id_serie,
-        userId,
-      ],
-    );
     if (state === "cancelado" && current.pagado)
       await setDeliveryPayment(
         connection,
@@ -951,6 +971,7 @@ exports.state = async (req, res) => {
   const connection = await db.getConnection();
   try {
     await connection.beginTransaction();
+    await lockDeliverySeries(connection, req.usuario.id_usuario, req.params.id);
     const [[current]] = await connection.query(
       `SELECT id_pedido_vianda,id_serie,pagado,metodo_pago FROM pedidos_viandas
        WHERE id_pedido_vianda=? AND id_usuario=? AND activo=1 FOR UPDATE`,
@@ -973,6 +994,7 @@ exports.state = async (req, res) => {
         current.metodo_pago,
         null,
       );
+    await syncSeries(connection, req.usuario.id_usuario, current.id_serie);
     const [[row]] = await connection.query(
       `SELECT id_pedido_vianda,estado,pagado,fecha_actualizacion
        FROM pedidos_viandas WHERE id_pedido_vianda=? AND id_usuario=?`,
@@ -1016,6 +1038,171 @@ async function changeDeliveryPayment(req, res, forcedValue = null) {
   }
 }
 
+// Cambios del detalle del cliente: todos se confirman o todos se revierten.
+exports.applyChanges = async (req, res) => {
+  const changes = req.body?.cambios;
+  if (!Array.isArray(changes) || !changes.length || changes.length > 520)
+    return res
+      .status(400)
+      .json({ ok: false, mensaje: "Envía entre 1 y 520 entregas" });
+  const ids = changes.map((item) => Number(item?.id_pedido_vianda));
+  if (
+    ids.some((id) => !Number.isSafeInteger(id) || id <= 0) ||
+    new Set(ids).size !== ids.length
+  )
+    return res
+      .status(400)
+      .json({ ok: false, mensaje: "Entregas inválidas o repetidas" });
+  const role = req.usuario.rol;
+  const canState = [
+    "propietario",
+    "administrador",
+    "ventas",
+    "reparto",
+  ].includes(role);
+  const canPay = ["propietario", "administrador", "ventas", "caja"].includes(
+    role,
+  );
+  for (const change of changes) {
+    if (
+      (change.estado !== undefined && !canState) ||
+      (change.pagado !== undefined && !canPay)
+    )
+      return res
+        .status(403)
+        .json({ ok: false, mensaje: "Tu rol no permite estos cambios" });
+    if (
+      (change.estado === undefined && change.pagado === undefined) ||
+      (change.estado !== undefined && !STATES.includes(change.estado)) ||
+      (change.pagado !== undefined && typeof change.pagado !== "boolean") ||
+      (change.metodo_pago !== undefined &&
+        !PAYMENT_METHODS.includes(change.metodo_pago)) ||
+      (change.fecha_pago != null && !fechaValida(change.fecha_pago))
+    )
+      return res
+        .status(400)
+        .json({ ok: false, mensaje: "Estado, pago o fecha inválidos" });
+  }
+  const connection = await db.getConnection();
+  try {
+    await connection.beginTransaction();
+    const userId = req.usuario.id_usuario;
+    const clientId = Number(req.params.id_cliente);
+    // Mismo orden de bloqueo para cobros individuales y lotes.
+    const [seriesRows] = await connection.query(
+      "SELECT id_serie FROM series_viandas WHERE id_usuario=? AND id_cliente=? AND activo=1 ORDER BY id_serie FOR UPDATE",
+      [userId, clientId],
+    );
+    const marks = ids.map(() => "?").join(",");
+    const [deliveries] = await connection.query(
+      `SELECT * FROM pedidos_viandas WHERE id_usuario=? AND id_cliente=? AND activo=1 AND id_pedido_vianda IN (${marks}) ORDER BY id_pedido_vianda FOR UPDATE`,
+      [userId, clientId, ...ids],
+    );
+    const seriesIds = new Set(seriesRows.map((row) => row.id_serie));
+    if (
+      deliveries.length !== ids.length ||
+      deliveries.some((row) => !seriesIds.has(row.id_serie))
+    )
+      throw Object.assign(
+        new Error("Una entrega ya no está disponible para este cliente"),
+        { status: 404 },
+      );
+    const affected = new Set();
+    const byId = new Map(
+      deliveries.map((row) => [Number(row.id_pedido_vianda), row]),
+    );
+    for (const change of [...changes].sort(
+      (a, b) => a.id_pedido_vianda - b.id_pedido_vianda,
+    )) {
+      const current = byId.get(Number(change.id_pedido_vianda));
+      const state = change.estado ?? current.estado;
+      if (
+        (change.estado !== undefined &&
+          change.estado_anterior !== undefined &&
+          current.estado !== change.estado_anterior &&
+          current.estado !== state) ||
+        (change.pagado !== undefined &&
+          change.pagado_anterior !== undefined &&
+          Boolean(current.pagado) !== change.pagado_anterior &&
+          Boolean(current.pagado) !== change.pagado)
+      )
+        throw Object.assign(
+          new Error(
+            "Las entregas cambiaron en otra sesión. Recarga antes de aplicar.",
+          ),
+          { status: 409 },
+        );
+      if (
+        current.estado === "cancelado" &&
+        change.estado === undefined &&
+        change.pagado === true
+      )
+        throw Object.assign(
+          new Error("No se puede cobrar una entrega cancelada"),
+          { status: 409 },
+        );
+      if (change.estado !== undefined && state !== current.estado)
+        await connection.query(
+          "UPDATE pedidos_viandas SET estado=? WHERE id_pedido_vianda=? AND id_usuario=?",
+          [state, current.id_pedido_vianda, userId],
+        );
+      if (state === "cancelado") {
+        if (change.pagado === true)
+          throw Object.assign(
+            new Error("Una entrega cancelada no puede quedar cobrada"),
+            { status: 409 },
+          );
+        if (current.pagado && !canPay)
+          throw Object.assign(
+            new Error("Cancelar una entrega cobrada requiere permiso de caja"),
+            { status: 403 },
+          );
+        await setDeliveryPayment(
+          connection,
+          userId,
+          current.id_pedido_vianda,
+          false,
+          current.metodo_pago,
+          null,
+          false,
+        );
+      } else if (
+        change.pagado !== undefined &&
+        Boolean(current.pagado) !== change.pagado
+      ) {
+        await setDeliveryPayment(
+          connection,
+          userId,
+          current.id_pedido_vianda,
+          change.pagado,
+          change.metodo_pago || current.metodo_pago,
+          change.fecha_pago,
+          false,
+        );
+      }
+      affected.add(current.id_serie);
+    }
+    const updatedSeries = [];
+    for (const id of [...affected].sort())
+      updatedSeries.push(await syncSeries(connection, userId, id));
+    const [updated] = await connection.query(
+      `SELECT id_pedido_vianda,estado,pagado,metodo_pago,fecha_pago,fecha_actualizacion FROM pedidos_viandas WHERE id_usuario=? AND id_pedido_vianda IN (${marks}) ORDER BY id_pedido_vianda`,
+      [userId, ...ids],
+    );
+    await connection.commit();
+    res.json({
+      ok: true,
+      mensaje: "Cambios aplicados",
+      data: { entregas: updated, series: updatedSeries },
+    });
+  } catch (error) {
+    await connection.rollback();
+    throw error;
+  } finally {
+    connection.release();
+  }
+};
+
 exports.addPayment = async (_req, res) =>
   res.status(409).json({
     ok: false,
@@ -1031,6 +1218,7 @@ exports.remove = async (req, res) => {
   const connection = await db.getConnection();
   try {
     await connection.beginTransaction();
+    await lockDeliverySeries(connection, req.usuario.id_usuario, req.params.id);
     const [[order]] = await connection.query(
       `SELECT v.id_serie,v.total,v.pagado,v.metodo_pago,s.total_plan,s.monto_pagado FROM pedidos_viandas v
        JOIN series_viandas s ON s.id_serie=v.id_serie

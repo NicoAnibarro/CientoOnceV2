@@ -46,9 +46,27 @@ exports.requestDeletion = async (req, res) => {
   const email = String(req.body.email || "")
     .trim()
     .toLowerCase();
-  if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) && emailService.configured()) {
-    await emailService.sendDeletionRequest({ email }).catch(() => {});
-  }
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))
+    return res
+      .status(400)
+      .type("html")
+      .send(
+        page(
+          "Correo inválido",
+          '<h1>Revisa el correo ingresado</h1><p><a href="./eliminar-cuenta">Volver a intentar</a></p>',
+        ),
+      );
+  if (!emailService.configured())
+    return res
+      .status(503)
+      .type("html")
+      .send(
+        page(
+          "Canal alternativo",
+          `<h1>Solicitud por correo no disponible</h1><p>Elimina tu cuenta desde Mi perfil o escribe a <a href="mailto:${PRIVACY_EMAIL}">${PRIVACY_EMAIL}</a>. Tu solicitud todavía no fue enviada.</p>`,
+        ),
+      );
+  await emailService.sendDeletionRequest({ email });
   res
     .type("html")
     .send(
@@ -61,12 +79,10 @@ exports.requestDeletion = async (req, res) => {
 
 exports.deleteAccount = async (req, res) => {
   if (req.usuario.id_empleado)
-    return res
-      .status(403)
-      .json({
-        ok: false,
-        mensaje: "Sólo el propietario puede eliminar la cuenta",
-      });
+    return res.status(403).json({
+      ok: false,
+      mensaje: "Sólo el propietario puede eliminar la cuenta",
+    });
   const password = String(req.body.password || "");
   const confirmation = String(req.body.confirmacion || "")
     .trim()

@@ -2,7 +2,7 @@ module.exports = () => ({
   expo: {
     name: "Ciento Once",
     slug: "ciento-once-v2",
-    version: "1.3.1",
+    version: "1.4.0",
     orientation: "portrait",
     icon: "./assets/icon.png",
     userInterfaceStyle: "light",

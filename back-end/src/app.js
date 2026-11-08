@@ -25,7 +25,7 @@ app.get("/api/health", (req, res) =>
   res.json({
     ok: true,
     mensaje: "API de Ciento Once disponible",
-    version: "2026.10.24-viandas-stock-guide",
+    version: "2026.11.08-viandas-cambios-lote",
     email_activo: emailService.configured(),
   }),
 );

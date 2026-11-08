@@ -9,6 +9,7 @@
     "check": "node --check src/server.js && node --check src/app.js",
     "test:integration": "node tests/integration.js",
     "test:stress": "node tests/stress.js",
+    "test:regression": "node tests/regression.js",
     "test:isolated": "node scripts/test-isolated.js",
     "test:isolated:render": "node scripts/test-isolated-render.js",
     "db:import": "node scripts/import-schema.js",

@@ -41,7 +41,7 @@ async function assertAccountingInvariants(userId) {
       `SELECT COUNT(*) invalidos FROM series_viandas s
        LEFT JOIN (
         SELECT id_serie,SUM(total) total FROM pedidos_viandas
-        WHERE id_usuario=? AND activo=1 GROUP BY id_serie
+        WHERE id_usuario=? AND activo=1 AND estado<>'cancelado' GROUP BY id_serie
        ) vt ON vt.id_serie=s.id_serie
        LEFT JOIN (
         SELECT id_serie,SUM(monto) cobrado FROM pagos_viandas

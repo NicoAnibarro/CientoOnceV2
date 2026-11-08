@@ -53,9 +53,11 @@ const pool = new Pool({
   idleTimeoutMillis: 30000,
   connectionTimeoutMillis: 15000,
   application_name: "ciento-once-api",
-  ...(process.env.DB_SCHEMA && /^[a-z_][a-z0-9_]*$/i.test(process.env.DB_SCHEMA)
-    ? { options: `-c search_path=${process.env.DB_SCHEMA},public` }
-    : {}),
+  options:
+    "-c timezone=America/Argentina/Buenos_Aires" +
+    (process.env.DB_SCHEMA && /^[a-z_][a-z0-9_]*$/i.test(process.env.DB_SCHEMA)
+      ? ` -c search_path=${process.env.DB_SCHEMA},public`
+      : ""),
 });
 
 function normalizeSql(sql) {

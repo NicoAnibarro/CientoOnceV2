@@ -35,7 +35,7 @@ Complete en `.env` la conexión PostgreSQL y un `JWT_SECRET` largo. Para Aiven u
 
 ## Frontend
 
-Configure `front-end/.env` con una URL accesible desde el teléfono:
+La app usa primero `EXPO_PUBLIC_API_URL` y, si falta, la API publicada de Ciento Once. Para trabajar contra Render no necesita un backend local. Para probar un backend local, configure `front-end/.env` con una URL accesible desde el teléfono:
 
 ```env
 EXPO_PUBLIC_API_URL=http://192.168.0.100:3000/api
@@ -62,6 +62,18 @@ La API recalcula importes, usa consultas parametrizadas y toma `id_usuario` excl
 - Pruebas aisladas en un esquema temporal: `npm.cmd run test:isolated`
 - Expo: `npx.cmd expo start`
 - Diagnóstico Expo: `npx.cmd expo-doctor`
+- Regresiones contra el PostgreSQL descartable local de auditoría: `npm.cmd run test:regression` (backend).
+- Prueba de interacción del detalle de viandas: `npm.cmd test` (frontend).
+
+## Detalle de viandas
+
+Las casillas de entrega y cobro se editan localmente, incluso al pasar de página o cambiar de plan. El botón **Aplicar cambios** envía una sola petición y confirma todo dentro de una transacción. Ante un error no se guarda ningún cambio del lote; la selección permanece para reintentar. Las fechas conservan su orden y la app avisa antes de salir con cambios pendientes. Reparto modifica entregas; caja modifica cobros; ventas y administración pueden realizar ambas operaciones.
+
+## APK Android
+
+El proyecto EAS es `@cientoonce/ciento-once-v2` (`8e6f5174-c656-4aff-8ee3-083da5a3d075`). El perfil `preview` genera una APK instalable mediante `eas build --platform android --profile preview`. La clave de Maps Android se configura en el entorno EAS como `EXPO_PUBLIC_GOOGLE_MAPS_ANDROID_KEY`; no guardar claves reales en Git. Esta versión requiere desplegar también el backend actualizado para habilitar el guardado de viandas en lote.
+
+Los SQL numerados históricos corresponden a MySQL. Para PostgreSQL se usa `001_schema_postgresql.sql`; volver a importarlo no reemplaza una migración de columnas de una base existente. Estas correcciones no requieren cambios de esquema ni reimportar la base productiva.
 
 ## Despliegue
 
