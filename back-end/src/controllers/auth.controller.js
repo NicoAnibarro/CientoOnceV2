@@ -59,13 +59,17 @@ exports.register = async (req, res) => {
   if (!nombre || !emailOk(email) || !passwordOk(password)) {
     return res.status(400).json({ ok: false, mensaje: 'Revisa nombre, email y contraseña (8 a 72 caracteres)' });
   }
+  // Si la verificación está desactivada debe respetarse aunque existan
+  // credenciales SMTP configuradas. Antes se intentaba enviar igualmente y
+  // los servicios gratuitos de Render quedaban esperando un puerto bloqueado.
   const skipVerification =
-    email.endsWith('@local.test') ||
-    (!emailVerificationRequired() && !emailService.configured());
+    email.endsWith('@local.test') || !emailVerificationRequired();
   if (!skipVerification && !emailService.configured()) {
     return res.status(503).json({ ok: false, mensaje: 'El envío de correo todavía no está configurado' });
   }
   const connection = await db.getConnection();
+  let credentials = null;
+  let userId = null;
   try {
     await connection.beginTransaction();
     const [[exists]] = await connection.query('SELECT id_usuario FROM usuarios WHERE email=?', [email]);
@@ -75,27 +79,49 @@ exports.register = async (req, res) => {
       'INSERT INTO usuarios(nombre,email,password_hash,email_verificado,fecha_verificacion_email) VALUES(?,?,?, ?,CASE WHEN ?=1 THEN NOW() ELSE NULL END)',
       [nombre, email, passwordHash, skipVerification ? 1 : 0, skipVerification ? 1 : 0]
     );
-    if (!skipVerification) {
-      const credentials = await issue(connection, result.insertId, 'verificar_email');
-      await emailService.sendVerification({ email, nombre, code: credentials.code, token: credentials.rawToken });
-    }
+    userId = result.insertId;
+    if (!skipVerification)
+      credentials = await issue(connection, userId, 'verificar_email');
     await connection.commit();
-    const testUser = { id_usuario: result.insertId, nombre, email };
-    res.status(201).json({
-      ok: true,
-      mensaje: skipVerification ? 'Cuenta creada correctamente' : 'Te enviamos un correo para verificar tu cuenta',
-      data: {
-        email,
-        requiere_verificacion: !skipVerification,
-        ...(skipVerification ? { token: token(testUser), usuario: testUser } : {})
-      }
-    });
   } catch (error) {
     await connection.rollback();
     throw error;
   } finally {
     connection.release();
   }
+
+  let emailSent = false;
+  if (!skipVerification) {
+    try {
+      await emailService.sendVerification({
+        email,
+        nombre,
+        code: credentials.code,
+        token: credentials.rawToken,
+      });
+      emailSent = true;
+    } catch (error) {
+      // La cuenta ya está guardada y el usuario puede volver a solicitar el
+      // código. No se mantiene una transacción abierta durante una llamada de red.
+      console.error('No se pudo enviar la verificación de correo:', error.message);
+    }
+  }
+
+  const createdUser = { id_usuario: userId, nombre, email };
+  res.status(201).json({
+    ok: true,
+    mensaje: skipVerification
+      ? 'Cuenta creada correctamente'
+      : emailSent
+        ? 'Te enviamos un correo para verificar tu cuenta'
+        : 'Cuenta creada. No pudimos enviar el correo; intenta reenviarlo en unos minutos',
+    data: {
+      email,
+      requiere_verificacion: !skipVerification,
+      correo_enviado: emailSent,
+      ...(skipVerification ? { token: token(createdUser), usuario: createdUser } : {})
+    }
+  });
 };
 
 exports.login = async (req, res) => {

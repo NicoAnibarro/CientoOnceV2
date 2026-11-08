@@ -633,6 +633,12 @@ export function Registro({ navigation }) {
         password: value.password,
       });
       if (response.data.data?.requiere_verificacion) {
+        if (response.data.data?.correo_enviado === false) {
+          Alert.alert(
+            "Cuenta creada",
+            "No pudimos enviar el correo en este momento. Desde la pantalla siguiente puedes volver a solicitarlo.",
+          );
+        }
         navigation.replace("VerificarCorreo", {
           email: value.email.trim().toLowerCase(),
         });

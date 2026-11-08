@@ -93,6 +93,73 @@ async function run() {
     let response = await request("/health");
     assert.equal(response.status, 200);
 
+    const originalEmailEnv = {
+      required: process.env.REQUIRE_EMAIL_VERIFICATION,
+      enabled: process.env.EMAIL_DELIVERY_ENABLED,
+      user: process.env.SMTP_USER,
+      pass: process.env.SMTP_PASS,
+    };
+    process.env.REQUIRE_EMAIL_VERIFICATION = "false";
+    process.env.EMAIL_DELIVERY_ENABLED = "true";
+    process.env.SMTP_USER = "configurado@example.com";
+    process.env.SMTP_PASS = "credencial-de-prueba";
+    response = await request("/auth/register", {
+      method: "POST",
+      body: {
+        nombre: "Registro sin correo",
+        email: `registro.sin.correo.${stamp}@example.com`,
+        password: "secreto-envio",
+      },
+    });
+    assert.equal(response.status, 201, JSON.stringify(response.json));
+    assert.equal(response.json.data.requiere_verificacion, false);
+    assert.ok(response.json.data.token);
+
+    const emailService = require("../src/services/email.service");
+    const originalConfigured = emailService.configured;
+    const originalSendVerification = emailService.sendVerification;
+    process.env.REQUIRE_EMAIL_VERIFICATION = "true";
+    emailService.configured = () => true;
+    emailService.sendVerification = async () => {};
+    response = await request("/auth/register", {
+      method: "POST",
+      body: {
+        nombre: "Registro con correo",
+        email: `registro.con.correo.${stamp}@example.com`,
+        password: "secreto-envio",
+      },
+    });
+    assert.equal(response.status, 201, JSON.stringify(response.json));
+    assert.equal(response.json.data.requiere_verificacion, true);
+    assert.equal(response.json.data.correo_enviado, true);
+
+    emailService.sendVerification = async () => {
+      throw new Error("proveedor no disponible");
+    };
+    response = await request("/auth/register", {
+      method: "POST",
+      body: {
+        nombre: "Registro con fallo de correo",
+        email: `registro.fallo.correo.${stamp}@example.com`,
+        password: "secreto-envio",
+      },
+    });
+    assert.equal(response.status, 201, JSON.stringify(response.json));
+    assert.equal(response.json.data.requiere_verificacion, true);
+    assert.equal(response.json.data.correo_enviado, false);
+    emailService.configured = originalConfigured;
+    emailService.sendVerification = originalSendVerification;
+    if (originalEmailEnv.required === undefined)
+      delete process.env.REQUIRE_EMAIL_VERIFICATION;
+    else process.env.REQUIRE_EMAIL_VERIFICATION = originalEmailEnv.required;
+    if (originalEmailEnv.enabled === undefined)
+      delete process.env.EMAIL_DELIVERY_ENABLED;
+    else process.env.EMAIL_DELIVERY_ENABLED = originalEmailEnv.enabled;
+    if (originalEmailEnv.user === undefined) delete process.env.SMTP_USER;
+    else process.env.SMTP_USER = originalEmailEnv.user;
+    if (originalEmailEnv.pass === undefined) delete process.env.SMTP_PASS;
+    else process.env.SMTP_PASS = originalEmailEnv.pass;
+
     response = await request("/auth/register", {
       method: "POST",
       body: {

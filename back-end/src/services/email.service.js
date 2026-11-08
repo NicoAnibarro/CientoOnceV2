@@ -1,7 +1,8 @@
 const nodemailer = require('nodemailer');
 
 function configured() {
-  return !!(process.env.SMTP_USER && process.env.SMTP_PASS);
+  const enabled = String(process.env.EMAIL_DELIVERY_ENABLED || 'true').toLowerCase() !== 'false';
+  return enabled && !!(process.env.SMTP_USER && process.env.SMTP_PASS);
 }
 
 function transporter() {
@@ -9,7 +10,10 @@ function transporter() {
     host: process.env.SMTP_HOST || 'smtp.gmail.com',
     port: Number(process.env.SMTP_PORT || 465),
     secure: String(process.env.SMTP_SECURE || 'true') !== 'false',
-    auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS }
+    auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS },
+    connectionTimeout: Number(process.env.SMTP_CONNECTION_TIMEOUT_MS || 8000),
+    greetingTimeout: Number(process.env.SMTP_GREETING_TIMEOUT_MS || 8000),
+    socketTimeout: Number(process.env.SMTP_SOCKET_TIMEOUT_MS || 12000)
   });
 }
 
